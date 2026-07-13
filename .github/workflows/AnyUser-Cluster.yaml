@@ -1,0 +1,388 @@
+name: Any User Create Kubernetes Cluster
+
+# ============================================================
+# HOW TO USE THIS PIPELINE
+# ============================================================
+# GCP users:
+#   1. Get your service account JSON key file
+#   2. Base64 encode it into a SINGLE LINE (no line breaks):
+#      Linux:   base64 -w 0 key.json
+#      Mac:     base64 -i key.json | tr -d '\n'
+#      Windows: [Convert]::ToBase64String([IO.File]::ReadAllBytes("key.json"))
+#   3. Paste the single-line output into gcp_sa_key_base64 input
+#
+# DigitalOcean users:
+#   1. Get your API token from https://cloud.digitalocean.com/account/api/tokens
+#   2. Fill in the DO inputs below when triggering the workflow
+# ============================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+
+      # Common 
+      provider:
+        description: "Cloud provider to use"
+        required: true
+        default: "gcp"
+        type: choice
+        options:
+          - gcp
+          - digitalocean
+
+      action:
+        description: "Apply = create cluster | Destroy = delete cluster"
+        required: true
+        default: "apply"
+        type: choice
+        options:
+          - apply
+          - destroy
+
+      # ---- GCP inputs (fill these if provider = gcp) ----
+      gcp_project_id:
+        description: "[GCP] Your GCP project ID  e.g. my-project-123"
+        required: false
+        type: string
+
+      gcp_sa_key_base64:
+        description: "[GCP] SA key base64 single-line. Linux: base64 -w 0 key.json | Mac: base64 -i key.json | tr -d '\\n'"
+        required: false
+        type: string
+
+      cluster_name:
+        description: "Cluster name (GKE or DOKS)"
+        required: false
+        type: string
+
+      gcp_cluster_zone:
+        description: "[GCP] Zone for the GKE cluster  e.g. us-central1-a"
+        required: false
+        default: "us-central1-a"
+        type: string
+
+      gcp_terraform_dir:
+        description: "[GCP] Terraform directory to use  e.g. ./gcp-mahesh"
+        required: false
+        default: "./gcp-mahesh"
+        type: string
+
+      # ---- DigitalOcean inputs (fill these if provider = digitalocean) ----
+      do_token:
+        description: "[DO] DigitalOcean API token"
+        required: false
+        type: string
+
+      do_access_key:
+        description: "[DO] Spaces access key (Terraform backend)"
+        required: false
+        type: string
+
+      do_secret_key:
+        description: "[DO] Spaces secret key (Terraform backend)"
+        required: false
+        type: string
+
+      do_terraform_dir:
+        description: "[DO] Terraform directory to use  e.g. ./digitalocean-mahesh"
+        required: false
+        default: "./digitalocean-mahesh"
+        type: string
+
+      do_cluster_region:
+        description: "[DO] Region for the DOKS cluster  e.g. nyc3"
+        required: false
+        default: "nyc3"
+        type: string
+
+jobs:
+  provision-cluster:
+    name: Provision Kubernetes Cluster
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Print input parameters
+        run: |
+          echo "================================================"
+          echo "  Pipeline Input Parameters"
+          echo "================================================"
+          echo "  provider        : ${{ github.event.inputs.provider }}"
+          echo "  action          : ${{ github.event.inputs.action }}"
+          echo "  cluster_name    : ${{ github.event.inputs.cluster_name }}"
+          echo "  gcp_project_id  : ${{ github.event.inputs.gcp_project_id }}"
+          echo "  gcp_cluster_zone: ${{ github.event.inputs.gcp_cluster_zone }}"
+          echo "  gcp_terraform_dir: ${{ github.event.inputs.gcp_terraform_dir }}"
+          echo "  do_terraform_dir: ${{ github.event.inputs.do_terraform_dir }}"
+          echo "  do_cluster_region: ${{ github.event.inputs.do_cluster_region }}"
+          echo "  do_token        : ${{ github.event.inputs.do_token != '' && '*** provided ***' || 'NOT provided' }}"
+          echo "  do_access_key   : ${{ github.event.inputs.do_access_key != '' && '*** provided ***' || 'NOT provided' }}"
+          echo "  do_secret_key   : ${{ github.event.inputs.do_secret_key != '' && '*** provided ***' || 'NOT provided' }}"
+          echo "  gcp_sa_key_base64: ${{ github.event.inputs.gcp_sa_key_base64 != '' && '*** provided ***' || 'NOT provided' }}"
+          echo "================================================"
+
+      - name: Validate required inputs
+        run: |
+          PROVIDER="${{ github.event.inputs.provider }}"
+          if [[ "$PROVIDER" == "gcp" ]]; then
+            [[ -z "${{ github.event.inputs.gcp_project_id }}" ]]  && echo "ERROR: gcp_project_id is required"  && exit 1
+            [[ -z "${{ github.event.inputs.gcp_sa_key_base64 }}" ]] && echo "ERROR: gcp_sa_key_base64 is required" && exit 1
+            echo "GCP inputs validated."
+          fi
+          if [[ "$PROVIDER" == "digitalocean" ]]; then
+            [[ -z "${{ github.event.inputs.do_token }}" ]] && echo "ERROR: do_token is required" && exit 1
+            echo "DigitalOcean inputs validated."
+          fi
+
+      - name: Set working directory
+        id: setdir
+        run: |
+          if [[ "${{ github.event.inputs.provider }}" == "gcp" ]]; then
+            echo "dir=${{ github.event.inputs.gcp_terraform_dir }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "dir=${{ github.event.inputs.do_terraform_dir }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.0
+
+      # ==== GCP Auth ====
+      - name: Decode and authenticate to GCP
+        if: ${{ github.event.inputs.provider == 'gcp' }}
+        env:
+          GCP_SA_KEY_BASE64: ${{ github.event.inputs.gcp_sa_key_base64 }}
+        run: |
+          echo "$GCP_SA_KEY_BASE64" | tr -d '\n' | base64 -d > $HOME/gcp-key.json
+          gcloud auth activate-service-account --key-file=$HOME/gcp-key.json
+          gcloud config set project ${{ github.event.inputs.gcp_project_id }}
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$HOME/gcp-key.json" >> $GITHUB_ENV
+
+      - name: Install gke-gcloud-auth-plugin
+        if: ${{ github.event.inputs.provider == 'gcp' }}
+        run: |
+          echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list
+          curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key --keyring /usr/share/keyrings/cloud.google.gpg add -
+          sudo apt-get update -y
+          sudo apt-get install -y google-cloud-cli-gke-gcloud-auth-plugin
+
+      # ==== Terraform Init ====
+      - name: Terraform Init (GCP)
+        if: ${{ github.event.inputs.provider == 'gcp' }}
+        run: terraform init -input=false
+        working-directory: ${{ steps.setdir.outputs.dir }}
+
+      - name: Terraform Init (DigitalOcean)
+        if: ${{ github.event.inputs.provider == 'digitalocean' }}
+        env:
+          TF_VAR_digitalocean_token: ${{ github.event.inputs.do_token }}
+        run: |
+          for attempt in 1 2 3; do
+            echo "Terraform init attempt $attempt of 3..."
+            terraform init -input=false \
+              -backend-config="access_key=${{ github.event.inputs.do_access_key }}" \
+              -backend-config="secret_key=${{ github.event.inputs.do_secret_key }}" && break
+            if [[ $attempt -lt 3 ]]; then
+              echo "Init failed, retrying in 30s..."
+              sleep 30
+            else
+              echo "Terraform init failed after 3 attempts."
+              exit 1
+            fi
+          done
+        working-directory: ${{ steps.setdir.outputs.dir }}
+
+      # ==== Terraform Plan / Apply / Destroy ====
+      - name: Terraform Validate
+        run: terraform validate
+        working-directory: ${{ steps.setdir.outputs.dir }}
+
+      - name: Terraform Plan
+        env:
+          TF_VAR_digitalocean_token: ${{ github.event.inputs.do_token }}
+        run: |
+          if [[ "${{ github.event.inputs.provider }}" == "gcp" ]]; then
+            export TF_VAR_project_id="${{ github.event.inputs.gcp_project_id }}"
+            export TF_VAR_cluster_name="${{ github.event.inputs.cluster_name }}"
+            export TF_VAR_zone="${{ github.event.inputs.gcp_cluster_zone }}"
+          elif [[ "${{ github.event.inputs.provider }}" == "digitalocean" ]]; then
+            export TF_VAR_cluster_name="${{ github.event.inputs.cluster_name }}"
+            export TF_VAR_region="${{ github.event.inputs.do_cluster_region }}"
+          fi
+          
+          if [[ "${{ github.event.inputs.action }}" == "apply" ]]; then
+            terraform plan -out=tfplan
+          else
+            terraform plan -destroy -out=tfplan
+          fi
+        working-directory: ${{ steps.setdir.outputs.dir }}
+
+      - name: Terraform Apply
+        if: ${{ github.event.inputs.action == 'apply' }}
+        env:
+          TF_VAR_digitalocean_token: ${{ github.event.inputs.do_token }}
+        run: |
+          if [[ "${{ github.event.inputs.provider }}" == "gcp" ]]; then
+            export TF_VAR_project_id="${{ github.event.inputs.gcp_project_id }}"
+            export TF_VAR_cluster_name="${{ github.event.inputs.cluster_name }}"
+            export TF_VAR_zone="${{ github.event.inputs.gcp_cluster_zone }}"
+          elif [[ "${{ github.event.inputs.provider }}" == "digitalocean" ]]; then
+            export TF_VAR_cluster_name="${{ github.event.inputs.cluster_name }}"
+            export TF_VAR_region="${{ github.event.inputs.do_cluster_region }}"
+          fi
+          terraform apply -auto-approve tfplan
+        working-directory: ${{ steps.setdir.outputs.dir }}
+
+      # ==== Pre-destroy: clean up DO LoadBalancers and Volumes via DO API (no kubectl needed) ====
+      - name: Install doctl (DO pre-destroy cleanup)
+        if: ${{ github.event.inputs.action == 'destroy' && github.event.inputs.provider == 'digitalocean' }}
+        run: |
+          curl -sL https://github.com/digitalocean/doctl/releases/download/v1.97.0/doctl-1.97.0-linux-amd64.tar.gz | tar -xz
+          sudo mv doctl /usr/local/bin/
+          doctl auth init -t ${{ github.event.inputs.do_token }}
+
+      - name: Delete all DO LoadBalancers via API (DigitalOcean pre-destroy)
+        if: ${{ github.event.inputs.action == 'destroy' && github.event.inputs.provider == 'digitalocean' }}
+        run: |
+          echo "Fetching all LoadBalancers in your DO account..."
+          LB_IDS=$(doctl compute load-balancer list --format ID --no-header 2>/dev/null || true)
+          if [[ -z "$LB_IDS" ]]; then
+            echo "No LoadBalancers found, skipping."
+          else
+            echo "Deleting LoadBalancers: $LB_IDS"
+            for LB_ID in $LB_IDS; do
+              echo "Deleting LoadBalancer $LB_ID..."
+              doctl compute load-balancer delete "$LB_ID" --force
+            done
+            echo "⏳ Waiting 20s for DO to release LoadBalancers..."
+            sleep 20
+            echo "✅ All LoadBalancers deleted"
+          fi
+
+      - name: Delete all DO Block Storage Volumes via API (DigitalOcean pre-destroy)
+        if: ${{ github.event.inputs.action == 'destroy' && github.event.inputs.provider == 'digitalocean' }}
+        run: |
+          echo "Fetching all Block Storage Volumes in your DO account..."
+          VOL_IDS=$(doctl compute volume list --format ID --no-header 2>/dev/null || true)
+          if [[ -z "$VOL_IDS" ]]; then
+            echo "No Volumes found, skipping."
+          else
+            echo "Deleting Volumes: $VOL_IDS"
+            for VOL_ID in $VOL_IDS; do
+              echo "Deleting Volume $VOL_ID..."
+              doctl compute volume delete "$VOL_ID" --force || true
+            done
+            echo "✅ All Volumes deleted"
+          fi
+
+      # ==== Pre-destroy: clean up GCP LoadBalancers and NEGs via Kubernetes controllers & gcloud ====
+      - name: GKE Pre-Destroy Cleanup (GCP)
+        if: ${{ github.event.inputs.action == 'destroy' && github.event.inputs.provider == 'gcp' }}
+        run: |
+          echo "Connecting to GKE cluster..."
+          gcloud container clusters get-credentials "${{ github.event.inputs.cluster_name }}" --zone "${{ github.event.inputs.gcp_cluster_zone }}" --project "${{ github.event.inputs.gcp_project_id }}" || true
+          
+          echo "Uninstalling helm charts and deleting ingresses/services to trigger resource cleanup..."
+          helm list -A -q | xargs -I {} helm uninstall {} || true
+          kubectl delete ingress --all --all-namespaces || true
+          kubectl delete svc --all --all-namespaces --field-selector metadata.name!=kubernetes || true
+          
+          echo "⏳ Waiting 60s for GCP Load Balancers and NEGs to be cleanly deleted by controllers..."
+          sleep 60
+          
+          echo "Deleting any leftover NEGs..."
+          ZONE="${{ github.event.inputs.gcp_cluster_zone }}"
+          PROJECT="${{ github.event.inputs.gcp_project_id }}"
+          NEGS=$(gcloud compute network-endpoint-groups list --zone="$ZONE" --project="$PROJECT" --format="value(name)" 2>/dev/null || true)
+          if [[ -n "$NEGS" ]]; then
+            echo "Leftover NEGs found: $NEGS"
+            for NEG in $NEGS; do
+              # Try to delete associated backend service first if it exists
+              gcloud compute backend-services delete "$NEG" --global --quiet --project="$PROJECT" || true
+              gcloud compute network-endpoint-groups delete "$NEG" --zone="$ZONE" --quiet --project="$PROJECT" || true
+            done
+          fi
+
+      # ==== Run Terraform destroy (plan was already created above) ====
+      - name: Terraform Destroy
+        if: ${{ github.event.inputs.action == 'destroy' }}
+        env:
+          TF_VAR_digitalocean_token: ${{ github.event.inputs.do_token }}
+        run: |
+          if [[ "${{ github.event.inputs.provider }}" == "gcp" ]]; then
+            export TF_VAR_project_id="${{ github.event.inputs.gcp_project_id }}"
+            export TF_VAR_cluster_name="${{ github.event.inputs.cluster_name }}"
+            export TF_VAR_zone="${{ github.event.inputs.gcp_cluster_zone }}"
+          elif [[ "${{ github.event.inputs.provider }}" == "digitalocean" ]]; then
+            export TF_VAR_cluster_name="${{ github.event.inputs.cluster_name }}"
+            export TF_VAR_region="${{ github.event.inputs.do_cluster_region }}"
+          fi
+          terraform apply -auto-approve tfplan
+        working-directory: ${{ steps.setdir.outputs.dir }}
+
+      # ==== Post-apply: print connect command (GCP) ====
+      - name: Output cluster connect command
+        if: ${{ github.event.inputs.action == 'apply' && github.event.inputs.provider == 'gcp' }}
+        run: |
+          echo "============================================"
+          echo "  GKE Cluster Connect Command"
+          echo "============================================"
+          echo "gcloud container clusters get-credentials ${{ github.event.inputs.cluster_name }} --zone ${{ github.event.inputs.gcp_cluster_zone }} --project ${{ github.event.inputs.gcp_project_id }}"
+          echo "============================================"
+
+      # ==== Post-apply: print connect command (DigitalOcean) ====
+      - name: Install doctl (for DO connect command)
+        if: ${{ github.event.inputs.action == 'apply' && github.event.inputs.provider == 'digitalocean' }}
+        run: |
+          curl -sL https://github.com/digitalocean/doctl/releases/download/v1.97.0/doctl-1.97.0-linux-amd64.tar.gz | tar -xz
+          sudo mv doctl /usr/local/bin/
+
+      - name: Output DOKS cluster connect command
+        if: ${{ github.event.inputs.action == 'apply' && github.event.inputs.provider == 'digitalocean' }}
+        run: |
+          echo "============================================"
+          echo "  DOKS Cluster Connect Command"
+          echo "============================================"
+          echo "doctl auth init -t <YOUR_DO_TOKEN>"
+          echo "doctl kubernetes cluster kubeconfig save ${{ github.event.inputs.cluster_name }}"
+          echo "============================================"
+
+      # ==== Post-destroy: delete SSL certificates ====
+      - name: Delete all SSL certificates
+        if: ${{ github.event.inputs.action == 'destroy' && github.event.inputs.provider == 'gcp' }}
+        run: |
+          GCP_PROJECT="${{ github.event.inputs.gcp_project_id }}"
+          echo "Fetching all SSL certificates..."
+          CERTS=$(gcloud compute ssl-certificates list --project=$GCP_PROJECT --format="value(name)" 2>/dev/null || true)
+          if [[ -z "$CERTS" ]]; then
+            echo "No SSL certificates found, nothing to delete."
+          else
+            echo "Deleting SSL certificates: $CERTS"
+            echo "$CERTS" | xargs -I {} gcloud compute ssl-certificates delete {} --project=$GCP_PROJECT --quiet
+            echo "All SSL certificates deleted."
+          fi
+
+      # ==== Post-destroy: delete static IP ====
+      - name: Delete global static IP
+        if: ${{ github.event.inputs.action == 'destroy' && github.event.inputs.provider == 'gcp' }}
+        run: |
+          IP_NAME="concrete-detection-ip"
+          GCP_PROJECT="${{ github.event.inputs.gcp_project_id }}"
+          EXISTING_IP=$(gcloud compute addresses describe $IP_NAME --global --project=$GCP_PROJECT --format="value(address)" 2>/dev/null || true)
+          if [[ -n "$EXISTING_IP" ]]; then
+            echo "Deleting static IP '$IP_NAME' ($EXISTING_IP)..."
+            gcloud compute addresses delete $IP_NAME --global --project=$GCP_PROJECT --quiet
+            echo "Static IP deleted."
+          else
+            echo "Static IP '$IP_NAME' not found, skipping."
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f tfplan
+          rm -f $HOME/gcp-key.json
+        working-directory: ${{ steps.setdir.outputs.dir }}

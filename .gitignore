@@ -1,0 +1,17 @@
+# Local directory for keeping state and plugins
+.terraform/
+.terraform.lock.hcl
+
+# Personal variables files
+*.tfvars
+*.tfvars.json
+
+# Ignore override files
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Ignore CLI configuration files
+.terraformrc
+terraform.rc
