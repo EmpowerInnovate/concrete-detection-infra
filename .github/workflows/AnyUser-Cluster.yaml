@@ -1,8 +1,8 @@
 name: Any User Create Kubernetes Cluster
 
-# ============================================================
+# ===========================================================
 # HOW TO USE THIS PIPELINE
-# ============================================================
+# ===========================================================
 # GCP users:
 #   1. Get your service account JSON key file
 #   2. Base64 encode it into a SINGLE LINE (no line breaks):
