@@ -58,6 +58,11 @@ on:
         options:
           - crack-detection-terraform
           - crack-detection-terraform-1
+          - custom
+      gcp_custom_backend_bucket:
+        description: "[GCP] Custom GCS bucket name (used only if GCS bucket name above is set to 'custom')"
+        required: false
+        type: string
 
       cluster_name:
         description: "Cluster name (GKE or DOKS)"
@@ -183,7 +188,15 @@ jobs:
       # ==== Terraform Init ====
       - name: Terraform Init (GCP)
         if: ${{ github.event.inputs.provider == 'gcp' }}
-        run: terraform init -input=false -backend-config="bucket=${{ github.event.inputs.gcp_backend_bucket }}"
+        run: |
+          BUCKET="${{ github.event.inputs.gcp_backend_bucket }}"
+          if [ "$BUCKET" = "custom" ]; then
+            BUCKET="${{ github.event.inputs.gcp_custom_backend_bucket }}"
+          fi
+          if [ -z "$BUCKET" ]; then
+            BUCKET="crack-detection-terraform"
+          fi
+          terraform init -input=false -backend-config="bucket=$BUCKET"
         working-directory: ${{ steps.setdir.outputs.dir }}
 
       - name: Terraform Init (DigitalOcean)
