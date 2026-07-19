@@ -21,9 +21,7 @@ resource "google_project_service" "required" {
   ])
   service = each.key
 
-  lifecycle {
-    prevent_destroy = true
-  }
+  disable_on_destroy = false
 }
 
 resource "google_service_account" "crack_detection_sa" {
