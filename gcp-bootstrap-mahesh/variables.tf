@@ -9,12 +9,3 @@ variable "region" {
 variable "sa_name" {
   default = "crack-detection-1"
 }
-variable "dns_zone_name" {
-  default = "concretecrackgallery"
-}
-variable "dns_domain" {
-  default = "maheshconcretegallery.online."
-}
-variable "ip_address" {
-  default = "198.216.18.1"
-}
