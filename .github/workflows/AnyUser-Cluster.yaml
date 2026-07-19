@@ -52,9 +52,12 @@ on:
 
       gcp_backend_bucket:
         description: "[GCP] GCS bucket name for Terraform backend"
-        required: false
+        required: true
         default: "crack-detection-terraform"
-        type: string
+        type: choice
+        options:
+          - crack-detection-terraform
+          - crack-detection-terraform-1
 
       cluster_name:
         description: "Cluster name (GKE or DOKS)"
