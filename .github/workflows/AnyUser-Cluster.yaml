@@ -50,6 +50,12 @@ on:
         required: false
         type: string
 
+      gcp_backend_bucket:
+        description: "[GCP] GCS bucket name for Terraform backend"
+        required: false
+        default: "crack-detection-terraform"
+        type: string
+
       cluster_name:
         description: "Cluster name (GKE or DOKS)"
         required: false
@@ -121,6 +127,7 @@ jobs:
           echo "  do_access_key   : ${{ github.event.inputs.do_access_key != '' && '*** provided ***' || 'NOT provided' }}"
           echo "  do_secret_key   : ${{ github.event.inputs.do_secret_key != '' && '*** provided ***' || 'NOT provided' }}"
           echo "  gcp_sa_key_base64: ${{ github.event.inputs.gcp_sa_key_base64 != '' && '*** provided ***' || 'NOT provided' }}"
+          echo "  gcp_backend_bucket: ${{ github.event.inputs.gcp_backend_bucket }}"
           echo "================================================"
 
       - name: Validate required inputs
@@ -129,6 +136,7 @@ jobs:
           if [[ "$PROVIDER" == "gcp" ]]; then
             [[ -z "${{ github.event.inputs.gcp_project_id }}" ]]  && echo "ERROR: gcp_project_id is required"  && exit 1
             [[ -z "${{ github.event.inputs.gcp_sa_key_base64 }}" ]] && echo "ERROR: gcp_sa_key_base64 is required" && exit 1
+            [[ -z "${{ github.event.inputs.gcp_backend_bucket }}" ]] && echo "ERROR: gcp_backend_bucket is required" && exit 1
             echo "GCP inputs validated."
           fi
           if [[ "$PROVIDER" == "digitalocean" ]]; then
@@ -172,7 +180,7 @@ jobs:
       # ==== Terraform Init ====
       - name: Terraform Init (GCP)
         if: ${{ github.event.inputs.provider == 'gcp' }}
-        run: terraform init -input=false
+        run: terraform init -input=false -backend-config="bucket=${{ github.event.inputs.gcp_backend_bucket }}"
         working-directory: ${{ steps.setdir.outputs.dir }}
 
       - name: Terraform Init (DigitalOcean)
