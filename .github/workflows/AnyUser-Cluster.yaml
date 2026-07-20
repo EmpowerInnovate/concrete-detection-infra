@@ -172,6 +172,11 @@ jobs:
         env:
           GCP_SA_KEY_BASE64: ${{ github.event.inputs.gcp_sa_key_base64 }}
         run: |
+          if [ -n "$GCP_SA_KEY_BASE64" ]; then
+            echo "First 15 characters of provided SA key token: ${GCP_SA_KEY_BASE64:0:15}..."
+          else
+            echo "No custom base64 SA key provided in input. Using default secrets."
+          fi
           echo "$GCP_SA_KEY_BASE64" | tr -d '\n' | base64 -d > $HOME/gcp-key.json
           gcloud auth activate-service-account --key-file=$HOME/gcp-key.json
           gcloud config set project ${{ github.event.inputs.gcp_project_id }}
