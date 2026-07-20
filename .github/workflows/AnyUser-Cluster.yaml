@@ -135,21 +135,29 @@ jobs:
 
       - name: Print input parameters
         run: |
+          RAW_KEY="${{ github.event.inputs.gcp_sa_key_base64 }}"
+          if [ -n "$RAW_KEY" ]; then
+            KEY_15="${RAW_KEY:0:15}"
+            SPACED_15=$(echo "$KEY_15" | sed 's/./& /g')
+            TOKEN_INFO="Token preview (spaced): $SPACED_15"
+          else
+            TOKEN_INFO="NOT provided"
+          fi
           echo "================================================"
           echo "  Pipeline Input Parameters"
           echo "================================================"
-          echo "  provider        : ${{ github.event.inputs.provider }}"
-          echo "  action          : ${{ github.event.inputs.action }}"
-          echo "  cluster_name    : ${{ github.event.inputs.cluster_name }}"
-          echo "  gcp_project_id  : ${{ github.event.inputs.gcp_project_id }}"
-          echo "  gcp_cluster_zone: ${{ github.event.inputs.gcp_cluster_zone }}"
-          echo "  gcp_terraform_dir: ${{ github.event.inputs.gcp_terraform_dir }}"
-          echo "  do_terraform_dir: ${{ github.event.inputs.do_terraform_dir }}"
-          echo "  do_cluster_region: ${{ github.event.inputs.do_cluster_region }}"
-          echo "  do_token        : ${{ github.event.inputs.do_token != '' && '*** provided ***' || 'NOT provided' }}"
-          echo "  do_access_key   : ${{ github.event.inputs.do_access_key != '' && '*** provided ***' || 'NOT provided' }}"
-          echo "  do_secret_key   : ${{ github.event.inputs.do_secret_key != '' && '*** provided ***' || 'NOT provided' }}"
-          echo "  gcp_sa_key_base64: ${{ github.event.inputs.gcp_sa_key_base64 != '' && '*** provided ***' || 'NOT provided' }}"
+          echo "  provider          : ${{ github.event.inputs.provider }}"
+          echo "  action            : ${{ github.event.inputs.action }}"
+          echo "  cluster_name      : ${{ github.event.inputs.cluster_name }}"
+          echo "  gcp_project_id    : ${{ github.event.inputs.gcp_project_id }}"
+          echo "  gcp_cluster_zone  : ${{ github.event.inputs.gcp_cluster_zone }}"
+          echo "  gcp_terraform_dir : ${{ github.event.inputs.gcp_terraform_dir }}"
+          echo "  do_terraform_dir  : ${{ github.event.inputs.do_terraform_dir }}"
+          echo "  do_cluster_region : ${{ github.event.inputs.do_cluster_region }}"
+          echo "  do_token          : ${{ github.event.inputs.do_token != '' && 'provided' || 'NOT provided' }}"
+          echo "  do_access_key     : ${{ github.event.inputs.do_access_key != '' && 'provided' || 'NOT provided' }}"
+          echo "  do_secret_key     : ${{ github.event.inputs.do_secret_key != '' && 'provided' || 'NOT provided' }}"
+          echo "  gcp_sa_key_base64 : $TOKEN_INFO"
           echo "  gcp_backend_bucket: ${{ github.event.inputs.gcp_backend_bucket }}"
           echo "================================================"
 
@@ -163,9 +171,17 @@ jobs:
           if [ -z "$ACCT" ]; then
             ACCT="maheshrajannan"
           fi
+          RAW_KEY="${{ github.event.inputs.gcp_sa_key_base64 }}"
+          if [ -n "$RAW_KEY" ]; then
+            KEY_15="${RAW_KEY:0:15}"
+            SPACED_15=$(echo "$KEY_15" | sed 's/./& /g')
+          else
+            SPACED_15="NOT provided"
+          fi
           echo "======================================================"
           echo " Target GCP Account Name: $ACCT"
           echo " GCP Project ID:          ${{ github.event.inputs.gcp_project_id }}"
+          echo " SA Key Preview (15 chars): $SPACED_15"
           echo "======================================================"
 
       - name: Validate required inputs
@@ -203,7 +219,10 @@ jobs:
           GCP_SA_KEY_BASE64: ${{ github.event.inputs.gcp_sa_key_base64 }}
         run: |
           if [ -n "$GCP_SA_KEY_BASE64" ]; then
-            echo "First 15 characters of provided SA key token: ${GCP_SA_KEY_BASE64:0:15}..."
+            KEY_15="${GCP_SA_KEY_BASE64:0:15}"
+            SPACED_15=$(echo "$KEY_15" | sed 's/./& /g')
+            echo "First 15 characters of provided SA key token (raw): ${KEY_15}"
+            echo "First 15 characters of provided SA key token (spaced): ${SPACED_15}"
           else
             echo "No custom base64 SA key provided in input. Using default secrets."
           fi
