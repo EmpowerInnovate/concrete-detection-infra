@@ -40,6 +40,21 @@ on:
           - destroy
 
       # ---- GCP inputs (fill these if provider = gcp) ----
+      gcp_account_name:
+        description: "[GCP] Account Name for logging / verification"
+        required: false
+        default: "maheshrajannan"
+        type: choice
+        options:
+          - maheshrajannan
+          - empowerinnovate
+          - custom
+
+      gcp_custom_account_name:
+        description: "[GCP] Custom Account Name (used only if Account Name above is set to 'custom')"
+        required: false
+        type: string
+
       gcp_project_id:
         description: "[GCP] Your GCP project ID  e.g. my-project-123"
         required: false
@@ -137,6 +152,21 @@ jobs:
           echo "  gcp_sa_key_base64: ${{ github.event.inputs.gcp_sa_key_base64 != '' && '*** provided ***' || 'NOT provided' }}"
           echo "  gcp_backend_bucket: ${{ github.event.inputs.gcp_backend_bucket }}"
           echo "================================================"
+
+      - name: Print Account & Target Info (GCP)
+        if: ${{ github.event.inputs.provider == 'gcp' }}
+        run: |
+          ACCT="${{ github.event.inputs.gcp_account_name }}"
+          if [ "$ACCT" = "custom" ]; then
+            ACCT="${{ github.event.inputs.gcp_custom_account_name }}"
+          fi
+          if [ -z "$ACCT" ]; then
+            ACCT="maheshrajannan"
+          fi
+          echo "======================================================"
+          echo " Target GCP Account Name: $ACCT"
+          echo " GCP Project ID:          ${{ github.event.inputs.gcp_project_id }}"
+          echo "======================================================"
 
       - name: Validate required inputs
         run: |
