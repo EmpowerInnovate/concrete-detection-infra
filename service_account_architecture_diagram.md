@@ -66,10 +66,10 @@ graph TD
 sequenceDiagram
     autonumber
     actor Developer as DevOps Engineer
-    participant CreationWF as Workflow: Mahesh GCP createServiceAccount Infra
+    participant CreationWF as Workflow: Setup GCP Service Account
     participant MainSA as Main Admin Service Account
     participant TargetSA as Target Deployment Service Account
-    participant ClusterWF as Workflow: Any User Create Kubernetes Cluster
+    participant ClusterWF as Workflow: Deploy Kubernetes Cluster
     participant GCPProject as GCP Target Project
 
     Note over Developer, GCPProject: STEP 1: Service Account & Role Provisioning
@@ -96,7 +96,7 @@ sequenceDiagram
 ## 3. Role Breakdown & Purpose Matrix
 
 ### **Level 1: Main Admin Service Account**
-Used by **`Mahesh-GCP-service-account-creation.yaml`** to perform administrative bootstrap operations.
+Used by **`setup-gcp-service-account.yaml`** to perform administrative bootstrap operations.
 
 | Full Role Display Name | GCP Technical Identifier | Purpose & Access Scope |
 | :--- | :--- | :--- |
@@ -109,7 +109,7 @@ Used by **`Mahesh-GCP-service-account-creation.yaml`** to perform administrative
 ---
 
 ### **Level 2: Target Deployment Service Account**
-Created dynamically (e.g., `crack-detection-1`, `crack-detection-3`) and used by **`AnyUser-Cluster.yaml`** for routine infrastructure provisioning and app deployment.
+Created dynamically (e.g., `crack-detection-1`, `crack-detection-3`) and used by **`deploy-kubernetes-cluster.yaml`** for routine infrastructure provisioning and app deployment.
 
 | Full Role Display Name | GCP Technical Identifier | Purpose & Access Scope |
 | :--- | :--- | :--- |

@@ -28,7 +28,7 @@ Deploying the infrastructure is done in two phases using Gitea / GitHub Actions 
 This workflow sets up the required GCP APIs and creates a scoped Service Account to handle cluster deployments.
 
 1. Navigate to the **Actions** tab in the Gitea/GitHub interface.
-2. Select the **`Mahesh GCP createServiceAccount Infra`** workflow.
+2. Select the **`Setup GCP Service Account`** workflow.
 3. Click **Run workflow** and fill in the parameters:
    * **Terraform action**: `apply`
    * **GCP Account Name**: Choose `maheshrajannan`, `empowerinnovate`, or select `custom` to type a different account label.
@@ -51,7 +51,7 @@ This workflow sets up the required GCP APIs and creates a scoped Service Account
 This workflow uses the scoped Service Account created in Phase 1 to provision the GKE cluster.
 
 1. Navigate to the **Actions** tab.
-2. Select the **`Any User Create Kubernetes Cluster`** workflow.
+2. Select the **`Deploy Kubernetes Cluster (GCP / DigitalOcean)`** workflow.
 3. Click **Run workflow** and fill in the parameters:
    * **Provider**: `gcp`
    * **Terraform action**: `apply`

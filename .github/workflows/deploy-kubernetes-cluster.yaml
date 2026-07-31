@@ -1,4 +1,4 @@
-name: Any User Create Kubernetes Cluster
+name: Deploy Kubernetes Cluster (GCP / DigitalOcean)
 
 # ===========================================================
 # HOW TO USE THIS PIPELINE
@@ -91,9 +91,9 @@ on:
         type: string
 
       gcp_terraform_dir:
-        description: "[GCP] Terraform directory to use  e.g. ./gcp-mahesh"
+        description: "[GCP] Terraform directory to use  e.g. ./gcp-cluster"
         required: false
-        default: "./gcp-mahesh"
+        default: "./gcp-cluster"
         type: string
 
       # ---- DigitalOcean inputs (fill these if provider = digitalocean) ----
@@ -113,9 +113,9 @@ on:
         type: string
 
       do_terraform_dir:
-        description: "[DO] Terraform directory to use  e.g. ./digitalocean-mahesh"
+        description: "[DO] Terraform directory to use  e.g. ./digitalocean-cluster"
         required: false
-        default: "./digitalocean-mahesh"
+        default: "./digitalocean-cluster"
         type: string
 
       do_cluster_region:
