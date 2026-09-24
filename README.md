@@ -47,24 +47,24 @@ This workflow sets up the required GCP APIs and creates a scoped Service Account
 
 ---
 
-### Phase 2: GKE Kubernetes Cluster Provisioning
-This workflow uses the scoped Service Account created in Phase 1 to provision the GKE cluster.
+### Phase 2: GKE / DigitalOcean Kubernetes Cluster Provisioning
+This workflow uses Terraform to provision Kubernetes clusters. Each cluster receives an isolated state file based on its `cluster_name`, allowing you to maintain multiple clusters simultaneously.
 
 1. Navigate to the **Actions** tab.
 2. Select the **`Deploy Kubernetes Cluster (GCP / DigitalOcean)`** workflow.
 3. Click **Run workflow** and fill in the parameters:
-   * **Provider**: `gcp`
-   * **Terraform action**: `apply`
-   * **Cluster name**: Name of your cluster (e.g., `crack-detection-cluster`).
-   * **GCP Project ID**: The ID of your project.
-   * **GCS bucket name**: Select/type the same bucket name used in Phase 1.
+   * **Provider**: `gcp` or `digitalocean`
+   * **Terraform action**: `apply` (or `destroy` to delete)
+   * **Cluster name**: Name of your cluster (e.g., `crack-detection-cluster`). *Note: Specifying a unique cluster name provisions a new independent cluster without affecting existing clusters. Re-using an existing name updates that specific cluster.*
+   * **GCP Project ID**: The ID of your project (if GCP).
+   * **GCS bucket name**: Select/type the bucket name used for Terraform backend state.
    * **GCP Service Account JSON key (base64)**: Paste the base64-encoded JSON key of the **Target Service Account** created in Phase 1.
 4. Click **Run Workflow**.
 
 This will automatically:
-* Provision the GKE Kubernetes Cluster with autoscaling node pools.
-* Register GKE authentication credentials.
-* Deploy your Helm Charts (`masterChart`, `nfsServerChart`) to the cluster.
+* Provision the Kubernetes Cluster with autoscaling node pools using isolated backend state.
+* Register cluster authentication credentials.
+* Deploy application components.
 
 ---
 
