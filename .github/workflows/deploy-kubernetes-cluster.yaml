@@ -82,6 +82,7 @@ on:
       cluster_name:
         description: "Cluster name (GKE or DOKS)"
         required: false
+        default: "crack-detection-cluster"
         type: string
 
       gcp_cluster_zone:
@@ -250,7 +251,12 @@ jobs:
           if [ -z "$BUCKET" ]; then
             BUCKET="crack-detection-terraform"
           fi
-          terraform init -input=false -backend-config="bucket=$BUCKET"
+          CLUSTER_NAME="${{ github.event.inputs.cluster_name }}"
+          if [ -z "$CLUSTER_NAME" ]; then
+            CLUSTER_NAME="crack-detection-cluster"
+          fi
+          echo "Initializing Terraform GCS backend with bucket=$BUCKET and prefix=gke/$CLUSTER_NAME"
+          terraform init -input=false -backend-config="bucket=$BUCKET" -backend-config="prefix=gke/$CLUSTER_NAME"
         working-directory: ${{ steps.setdir.outputs.dir }}
 
       - name: Terraform Init (DigitalOcean)
@@ -258,11 +264,17 @@ jobs:
         env:
           TF_VAR_digitalocean_token: ${{ github.event.inputs.do_token }}
         run: |
+          CLUSTER_NAME="${{ github.event.inputs.cluster_name }}"
+          if [ -z "$CLUSTER_NAME" ]; then
+            CLUSTER_NAME="crack-detection-cluster"
+          fi
+          echo "Initializing Terraform DO backend with key=DO-cluster/${CLUSTER_NAME}.tfstate"
           for attempt in 1 2 3; do
             echo "Terraform init attempt $attempt of 3..."
             terraform init -input=false \
               -backend-config="access_key=${{ github.event.inputs.do_access_key }}" \
-              -backend-config="secret_key=${{ github.event.inputs.do_secret_key }}" && break
+              -backend-config="secret_key=${{ github.event.inputs.do_secret_key }}" \
+              -backend-config="key=DO-cluster/${CLUSTER_NAME}.tfstate" && break
             if [[ $attempt -lt 3 ]]; then
               echo "Init failed, retrying in 30s..."
               sleep 30
