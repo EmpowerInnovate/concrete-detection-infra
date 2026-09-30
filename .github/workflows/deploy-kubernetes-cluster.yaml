@@ -1,4 +1,4 @@
-name: Deploy Kubernetes Cluster (GCP / DigitalOcean)
+name: Deploy Kubernetes Cluster (GCP / DigitalOcean / Azure AKS)
 
 # ===========================================================
 # HOW TO USE THIS PIPELINE
@@ -14,6 +14,11 @@ name: Deploy Kubernetes Cluster (GCP / DigitalOcean)
 # DigitalOcean users:
 #   1. Get your API token from https://cloud.digitalocean.com/account/api/tokens
 #   2. Fill in the DO inputs below when triggering the workflow
+#
+# Azure (AKS) users:
+#   1. Run "Setup Azure Service Principal & Backend" workflow or use existing SP
+#   2. Fill in the Azure inputs (azure_subscription_id, azure_tenant_id,
+#      azure_client_id, azure_client_secret, azure_storage_account)
 # ============================================================
 
 on:
@@ -29,6 +34,7 @@ on:
         options:
           - gcp
           - digitalocean
+          - azure
 
       action:
         description: "Apply = create cluster | Destroy = delete cluster"
@@ -38,6 +44,12 @@ on:
         options:
           - apply
           - destroy
+
+      cluster_name:
+        description: "Cluster name (GKE, DOKS, or AKS)"
+        required: false
+        default: "crack-detection-cluster"
+        type: string
 
       # ---- GCP inputs (fill these if provider = gcp) ----
       gcp_account_name:
@@ -67,22 +79,17 @@ on:
 
       gcp_backend_bucket:
         description: "[GCP] GCS bucket name for Terraform backend"
-        required: true
+        required: false
         default: "crack-detection-terraform"
         type: choice
         options:
           - crack-detection-terraform
           - crack-detection-terraform-1
           - custom
+
       gcp_custom_backend_bucket:
         description: "[GCP] Custom GCS bucket name (used only if GCS bucket name above is set to 'custom')"
         required: false
-        type: string
-
-      cluster_name:
-        description: "Cluster name (GKE or DOKS)"
-        required: false
-        default: "crack-detection-cluster"
         type: string
 
       gcp_cluster_zone:
@@ -125,6 +132,76 @@ on:
         default: "nyc3"
         type: string
 
+      # ---- Azure inputs (fill these if provider = azure) ----
+      azure_account_name:
+        description: "[Azure] Account label for logging / verification"
+        required: false
+        default: "maheshrajannan"
+        type: choice
+        options:
+          - maheshrajannan
+          - empowerinnovate
+          - custom
+
+      azure_custom_account_name:
+        description: "[Azure] Custom Account Name (used only if Account Name above is set to 'custom')"
+        required: false
+        type: string
+
+      azure_subscription_id:
+        description: "[Azure] Subscription ID"
+        required: false
+        type: string
+
+      azure_tenant_id:
+        description: "[Azure] Tenant ID (Directory ID)"
+        required: false
+        type: string
+
+      azure_client_id:
+        description: "[Azure] Service Principal Client ID (App ID)"
+        required: false
+        type: string
+
+      azure_client_secret:
+        description: "[Azure] Service Principal Client Secret"
+        required: false
+        type: string
+
+      azure_resource_group:
+        description: "[Azure] Resource Group for AKS (leave blank to auto-create '<cluster_name>-rg')"
+        required: false
+        type: string
+
+      azure_storage_account:
+        description: "[Azure] Storage Account name for Terraform backend"
+        required: false
+        type: string
+
+      azure_storage_container:
+        description: "[Azure] Blob Container name for Terraform backend"
+        required: false
+        default: "tfstate"
+        type: string
+
+      azure_location:
+        description: "[Azure] Region for the AKS cluster  e.g. eastus"
+        required: false
+        default: "eastus"
+        type: string
+
+      azure_terraform_dir:
+        description: "[Azure] Terraform directory to use  e.g. ./azure-cluster"
+        required: false
+        default: "./azure-cluster"
+        type: string
+
+      azure_node_size:
+        description: "[Azure] Node VM Size  e.g. Standard_D2s_v3"
+        required: false
+        default: "Standard_D2s_v3"
+        type: string
+
 jobs:
   provision-cluster:
     name: Provision Kubernetes Cluster
@@ -144,22 +221,41 @@ jobs:
           else
             TOKEN_INFO="NOT provided"
           fi
+
+          RAW_AZ_SECRET="${{ github.event.inputs.azure_client_secret }}"
+          if [ -n "$RAW_AZ_SECRET" ]; then
+            AZ_SEC_15="${RAW_AZ_SECRET:0:15}"
+            SPACED_AZ_15=$(echo "$AZ_SEC_15" | sed 's/./& /g')
+            AZ_SECRET_INFO="Secret preview (spaced): $SPACED_AZ_15"
+          else
+            AZ_SECRET_INFO="NOT provided (will check secrets)"
+          fi
+
           echo "================================================"
           echo "  Pipeline Input Parameters"
           echo "================================================"
-          echo "  provider          : ${{ github.event.inputs.provider }}"
-          echo "  action            : ${{ github.event.inputs.action }}"
-          echo "  cluster_name      : ${{ github.event.inputs.cluster_name }}"
-          echo "  gcp_project_id    : ${{ github.event.inputs.gcp_project_id }}"
-          echo "  gcp_cluster_zone  : ${{ github.event.inputs.gcp_cluster_zone }}"
-          echo "  gcp_terraform_dir : ${{ github.event.inputs.gcp_terraform_dir }}"
-          echo "  do_terraform_dir  : ${{ github.event.inputs.do_terraform_dir }}"
-          echo "  do_cluster_region : ${{ github.event.inputs.do_cluster_region }}"
-          echo "  do_token          : ${{ github.event.inputs.do_token != '' && 'provided' || 'NOT provided' }}"
-          echo "  do_access_key     : ${{ github.event.inputs.do_access_key != '' && 'provided' || 'NOT provided' }}"
-          echo "  do_secret_key     : ${{ github.event.inputs.do_secret_key != '' && 'provided' || 'NOT provided' }}"
-          echo "  gcp_sa_key_base64 : $TOKEN_INFO"
-          echo "  gcp_backend_bucket: ${{ github.event.inputs.gcp_backend_bucket }}"
+          echo "  provider                : ${{ github.event.inputs.provider }}"
+          echo "  action                  : ${{ github.event.inputs.action }}"
+          echo "  cluster_name            : ${{ github.event.inputs.cluster_name }}"
+          echo "  gcp_project_id          : ${{ github.event.inputs.gcp_project_id }}"
+          echo "  gcp_cluster_zone        : ${{ github.event.inputs.gcp_cluster_zone }}"
+          echo "  gcp_terraform_dir       : ${{ github.event.inputs.gcp_terraform_dir }}"
+          echo "  do_terraform_dir        : ${{ github.event.inputs.do_terraform_dir }}"
+          echo "  do_cluster_region       : ${{ github.event.inputs.do_cluster_region }}"
+          echo "  do_token                : ${{ github.event.inputs.do_token != '' && 'provided' || 'NOT provided' }}"
+          echo "  do_access_key           : ${{ github.event.inputs.do_access_key != '' && 'provided' || 'NOT provided' }}"
+          echo "  do_secret_key           : ${{ github.event.inputs.do_secret_key != '' && 'provided' || 'NOT provided' }}"
+          echo "  gcp_sa_key_base64       : $TOKEN_INFO"
+          echo "  gcp_backend_bucket      : ${{ github.event.inputs.gcp_backend_bucket }}"
+          echo "  azure_subscription_id   : ${{ github.event.inputs.azure_subscription_id }}"
+          echo "  azure_tenant_id         : ${{ github.event.inputs.azure_tenant_id }}"
+          echo "  azure_client_id         : ${{ github.event.inputs.azure_client_id != '' && 'provided' || 'NOT provided' }}"
+          echo "  azure_client_secret     : $AZ_SECRET_INFO"
+          echo "  azure_resource_group    : ${{ github.event.inputs.azure_resource_group }}"
+          echo "  azure_storage_account   : ${{ github.event.inputs.azure_storage_account }}"
+          echo "  azure_location          : ${{ github.event.inputs.azure_location }}"
+          echo "  azure_node_size         : ${{ github.event.inputs.azure_node_size }}"
+          echo "  azure_terraform_dir     : ${{ github.event.inputs.azure_terraform_dir }}"
           echo "================================================"
 
       - name: Print Account & Target Info (GCP)
@@ -185,6 +281,27 @@ jobs:
           echo " SA Key Preview (15 chars): $SPACED_15"
           echo "======================================================"
 
+      - name: Print Account & Target Info (Azure)
+        if: ${{ github.event.inputs.provider == 'azure' }}
+        run: |
+          ACCT="${{ github.event.inputs.azure_account_name }}"
+          if [ "$ACCT" = "custom" ]; then
+            ACCT="${{ github.event.inputs.azure_custom_account_name }}"
+          fi
+          if [ -z "$ACCT" ]; then
+            ACCT="maheshrajannan"
+          fi
+          SUB_ID="${{ github.event.inputs.azure_subscription_id }}"
+          echo "======================================================"
+          echo " Target Azure Account Label: $ACCT"
+          echo " Azure Subscription ID:      ${SUB_ID:0:8}...${SUB_ID: -4}"
+          echo " Azure Tenant ID:            ${{ github.event.inputs.azure_tenant_id }}"
+          echo " Azure Location:             ${{ github.event.inputs.azure_location }}"
+          echo " Cluster Name:               ${{ github.event.inputs.cluster_name }}"
+          echo " Storage Account (State):    ${{ github.event.inputs.azure_storage_account }}"
+          echo " Target Node Size:           ${{ github.event.inputs.azure_node_size }}"
+          echo "======================================================"
+
       - name: Validate required inputs
         run: |
           PROVIDER="${{ github.event.inputs.provider }}"
@@ -198,14 +315,24 @@ jobs:
             [[ -z "${{ github.event.inputs.do_token }}" ]] && echo "ERROR: do_token is required" && exit 1
             echo "DigitalOcean inputs validated."
           fi
+          if [[ "$PROVIDER" == "azure" ]]; then
+            [[ -z "${{ github.event.inputs.azure_subscription_id }}" ]] && echo "ERROR: azure_subscription_id is required" && exit 1
+            [[ -z "${{ github.event.inputs.azure_tenant_id }}" ]]       && echo "ERROR: azure_tenant_id is required" && exit 1
+            [[ -z "${{ github.event.inputs.azure_client_id }}" && -z "${{ secrets.AZURE_CLIENT_ID }}" ]] && echo "ERROR: azure_client_id is required" && exit 1
+            [[ -z "${{ github.event.inputs.azure_client_secret }}" && -z "${{ secrets.AZURE_CLIENT_SECRET }}" ]] && echo "ERROR: azure_client_secret is required" && exit 1
+            [[ -z "${{ github.event.inputs.azure_storage_account }}" ]] && echo "ERROR: azure_storage_account is required" && exit 1
+            echo "Azure inputs validated."
+          fi
 
       - name: Set working directory
         id: setdir
         run: |
           if [[ "${{ github.event.inputs.provider }}" == "gcp" ]]; then
             echo "dir=${{ github.event.inputs.gcp_terraform_dir }}" >> "$GITHUB_OUTPUT"
-          else
+          elif [[ "${{ github.event.inputs.provider }}" == "digitalocean" ]]; then
             echo "dir=${{ github.event.inputs.do_terraform_dir }}" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event.inputs.provider }}" == "azure" ]]; then
+            echo "dir=${{ github.event.inputs.azure_terraform_dir }}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Setup Terraform
@@ -239,6 +366,30 @@ jobs:
           curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key --keyring /usr/share/keyrings/cloud.google.gpg add -
           sudo apt-get update -y
           sudo apt-get install -y google-cloud-cli-gke-gcloud-auth-plugin
+
+      # ==== Azure Auth ====
+      - name: Authenticate to Azure
+        if: ${{ github.event.inputs.provider == 'azure' }}
+        env:
+          INPUT_CLIENT_ID: ${{ github.event.inputs.azure_client_id }}
+          INPUT_CLIENT_SECRET: ${{ github.event.inputs.azure_client_secret }}
+          SECRET_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          SECRET_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          TENANT_ID: ${{ github.event.inputs.azure_tenant_id }}
+          SUBSCRIPTION_ID: ${{ github.event.inputs.azure_subscription_id }}
+        run: |
+          CLIENT_ID="${INPUT_CLIENT_ID:-$SECRET_CLIENT_ID}"
+          CLIENT_SECRET="${INPUT_CLIENT_SECRET:-$SECRET_CLIENT_SECRET}"
+
+          echo "::add-mask::$CLIENT_SECRET"
+          echo "ARM_CLIENT_ID=$CLIENT_ID" >> $GITHUB_ENV
+          echo "ARM_CLIENT_SECRET=$CLIENT_SECRET" >> $GITHUB_ENV
+          echo "ARM_SUBSCRIPTION_ID=$SUBSCRIPTION_ID" >> $GITHUB_ENV
+          echo "ARM_TENANT_ID=$TENANT_ID" >> $GITHUB_ENV
+
+          az login --service-principal -u "$CLIENT_ID" -p "$CLIENT_SECRET" --tenant "$TENANT_ID"
+          az account set --subscription "$SUBSCRIPTION_ID"
+          echo "Azure CLI authenticated for Subscription: $SUBSCRIPTION_ID"
 
       # ==== Terraform Init ====
       - name: Terraform Init (GCP)
@@ -285,6 +436,41 @@ jobs:
           done
         working-directory: ${{ steps.setdir.outputs.dir }}
 
+      - name: Terraform Init (Azure)
+        if: ${{ github.event.inputs.provider == 'azure' }}
+        run: |
+          CLUSTER_NAME="${{ github.event.inputs.cluster_name }}"
+          if [ -z "$CLUSTER_NAME" ]; then
+            CLUSTER_NAME="crack-detection-cluster"
+          fi
+          STORAGE_ACCOUNT="${{ github.event.inputs.azure_storage_account }}"
+          CONTAINER="${{ github.event.inputs.azure_storage_container }}"
+          if [ -z "$CONTAINER" ]; then
+            CONTAINER="tfstate"
+          fi
+
+          # Discover or configure the storage account resource group
+          SA_RG=$(az storage account list --query "[?name=='$STORAGE_ACCOUNT'].resourceGroup" -o tsv 2>/dev/null || echo "")
+          if [ -z "$SA_RG" ]; then
+            SA_RG="${{ github.event.inputs.azure_resource_group }}"
+          fi
+          if [ -z "$SA_RG" ]; then
+            SA_RG="crack-detection-tfstate-rg"
+          fi
+
+          echo "Initializing Terraform Azure backend:"
+          echo "  resource_group_name  = $SA_RG"
+          echo "  storage_account_name = $STORAGE_ACCOUNT"
+          echo "  container_name       = $CONTAINER"
+          echo "  key                  = aks/${CLUSTER_NAME}.tfstate"
+
+          terraform init -input=false \
+            -backend-config="resource_group_name=$SA_RG" \
+            -backend-config="storage_account_name=$STORAGE_ACCOUNT" \
+            -backend-config="container_name=$CONTAINER" \
+            -backend-config="key=aks/${CLUSTER_NAME}.tfstate"
+        working-directory: ${{ steps.setdir.outputs.dir }}
+
       # ==== Terraform Plan / Apply / Destroy ====
       - name: Terraform Validate
         run: terraform validate
@@ -301,6 +487,13 @@ jobs:
           elif [[ "${{ github.event.inputs.provider }}" == "digitalocean" ]]; then
             export TF_VAR_cluster_name="${{ github.event.inputs.cluster_name }}"
             export TF_VAR_region="${{ github.event.inputs.do_cluster_region }}"
+          elif [[ "${{ github.event.inputs.provider }}" == "azure" ]]; then
+            export TF_VAR_cluster_name="${{ github.event.inputs.cluster_name }}"
+            export TF_VAR_location="${{ github.event.inputs.azure_location }}"
+            export TF_VAR_node_size="${{ github.event.inputs.azure_node_size }}"
+            if [ -n "${{ github.event.inputs.azure_resource_group }}" ]; then
+              export TF_VAR_resource_group_name="${{ github.event.inputs.azure_resource_group }}"
+            fi
           fi
           
           if [[ "${{ github.event.inputs.action }}" == "apply" ]]; then
@@ -322,6 +515,13 @@ jobs:
           elif [[ "${{ github.event.inputs.provider }}" == "digitalocean" ]]; then
             export TF_VAR_cluster_name="${{ github.event.inputs.cluster_name }}"
             export TF_VAR_region="${{ github.event.inputs.do_cluster_region }}"
+          elif [[ "${{ github.event.inputs.provider }}" == "azure" ]]; then
+            export TF_VAR_cluster_name="${{ github.event.inputs.cluster_name }}"
+            export TF_VAR_location="${{ github.event.inputs.azure_location }}"
+            export TF_VAR_node_size="${{ github.event.inputs.azure_node_size }}"
+            if [ -n "${{ github.event.inputs.azure_resource_group }}" ]; then
+              export TF_VAR_resource_group_name="${{ github.event.inputs.azure_resource_group }}"
+            fi
           fi
           terraform apply -auto-approve tfplan
         working-directory: ${{ steps.setdir.outputs.dir }}
@@ -396,6 +596,27 @@ jobs:
             done
           fi
 
+      # ==== Pre-destroy: clean up Azure LoadBalancers and Services ====
+      - name: AKS Pre-Destroy Cleanup (Azure)
+        if: ${{ github.event.inputs.action == 'destroy' && github.event.inputs.provider == 'azure' }}
+        run: |
+          CLUSTER_NAME="${{ github.event.inputs.cluster_name }}"
+          RG="${{ github.event.inputs.azure_resource_group }}"
+          if [ -z "$RG" ]; then
+            RG="${CLUSTER_NAME}-rg"
+          fi
+
+          echo "Connecting to AKS cluster $CLUSTER_NAME in $RG..."
+          az aks get-credentials --resource-group "$RG" --name "$CLUSTER_NAME" --overwrite-existing || true
+
+          echo "Uninstalling helm charts and deleting ingresses/services to release Azure Load Balancers and Public IPs..."
+          helm list -A -q | xargs -I {} helm uninstall {} || true
+          kubectl delete ingress --all --all-namespaces || true
+          kubectl delete svc --all --all-namespaces --field-selector metadata.name!=kubernetes || true
+
+          echo "⏳ Waiting 30s for Azure Load Balancers and Public IPs to be cleanly released..."
+          sleep 30
+
       # ==== Run Terraform destroy (plan was already created above) ====
       - name: Terraform Destroy
         if: ${{ github.event.inputs.action == 'destroy' }}
@@ -409,12 +630,19 @@ jobs:
           elif [[ "${{ github.event.inputs.provider }}" == "digitalocean" ]]; then
             export TF_VAR_cluster_name="${{ github.event.inputs.cluster_name }}"
             export TF_VAR_region="${{ github.event.inputs.do_cluster_region }}"
+          elif [[ "${{ github.event.inputs.provider }}" == "azure" ]]; then
+            export TF_VAR_cluster_name="${{ github.event.inputs.cluster_name }}"
+            export TF_VAR_location="${{ github.event.inputs.azure_location }}"
+            export TF_VAR_node_size="${{ github.event.inputs.azure_node_size }}"
+            if [ -n "${{ github.event.inputs.azure_resource_group }}" ]; then
+              export TF_VAR_resource_group_name="${{ github.event.inputs.azure_resource_group }}"
+            fi
           fi
           terraform apply -auto-approve tfplan
         working-directory: ${{ steps.setdir.outputs.dir }}
 
       # ==== Post-apply: print connect command (GCP) ====
-      - name: Output cluster connect command
+      - name: Output cluster connect command (GCP)
         if: ${{ github.event.inputs.action == 'apply' && github.event.inputs.provider == 'gcp' }}
         run: |
           echo "============================================"
@@ -440,7 +668,23 @@ jobs:
           echo "doctl kubernetes cluster kubeconfig save ${{ github.event.inputs.cluster_name }}"
           echo "============================================"
 
-      # ==== Post-destroy: delete SSL certificates ====
+      # ==== Post-apply: print connect command (Azure) ====
+      - name: Output AKS cluster connect command
+        if: ${{ github.event.inputs.action == 'apply' && github.event.inputs.provider == 'azure' }}
+        run: |
+          CLUSTER_NAME="${{ github.event.inputs.cluster_name }}"
+          RG="${{ github.event.inputs.azure_resource_group }}"
+          if [ -z "$RG" ]; then
+            RG="${CLUSTER_NAME}-rg"
+          fi
+          echo "============================================"
+          echo "  AKS Cluster Connect Command"
+          echo "============================================"
+          echo "az aks get-credentials --resource-group $RG --name $CLUSTER_NAME --overwrite-existing"
+          echo "kubectl get nodes"
+          echo "============================================"
+
+      # ==== Post-destroy: delete SSL certificates (GCP) ====
       - name: Delete all SSL certificates
         if: ${{ github.event.inputs.action == 'destroy' && github.event.inputs.provider == 'gcp' }}
         run: |
@@ -455,7 +699,7 @@ jobs:
             echo "All SSL certificates deleted."
           fi
 
-      # ==== Post-destroy: delete static IP ====
+      # ==== Post-destroy: delete static IP (GCP) ====
       - name: Delete global static IP
         if: ${{ github.event.inputs.action == 'destroy' && github.event.inputs.provider == 'gcp' }}
         run: |

@@ -1,0 +1,213 @@
+name: Setup Azure Service Principal & Backend
+
+# ===========================================================
+# PHASE 1: AZURE SERVICE PRINCIPAL & BACKEND SETUP
+# ===========================================================
+# This workflow sets up:
+# 1. An Azure Resource Group for Terraform state
+# 2. An Azure Storage Account & Blob Container for remote state
+# 3. An Azure AD Service Principal with Contributor role on the Subscription
+#
+# Once completed, save the generated credentials for use in
+# the "Deploy Kubernetes Cluster" workflow.
+# ===========================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Terraform action to perform'
+        required: true
+        default: 'apply'
+        type: choice
+        options:
+          - apply
+          - destroy
+
+      azure_account_name:
+        description: 'Azure Account / Owner label for logging & verification'
+        required: true
+        default: 'maheshrajannan'
+        type: choice
+        options:
+          - maheshrajannan
+          - empowerinnovate
+          - custom
+
+      azure_custom_account_name:
+        description: 'Custom Azure Account Name (used only if Account Name above is set to "custom")'
+        required: false
+        type: string
+
+      azure_subscription_id:
+        description: 'Azure Subscription ID'
+        required: true
+        type: string
+
+      azure_tenant_id:
+        description: 'Azure Tenant ID (Directory ID)'
+        required: true
+        type: string
+
+      azure_admin_client_id:
+        description: 'Existing Azure Admin Client ID (if left blank, uses secrets.AZURE_CLIENT_ID)'
+        required: false
+        type: string
+
+      azure_admin_client_secret:
+        description: 'Existing Azure Admin Client Secret (if left blank, uses secrets.AZURE_CLIENT_SECRET)'
+        required: false
+        type: string
+
+      azure_location:
+        description: 'Azure Region for backend storage'
+        required: true
+        default: 'eastus'
+        type: string
+
+      azure_resource_group:
+        description: 'Resource Group name for Terraform backend'
+        required: true
+        default: 'crack-detection-tfstate-rg'
+        type: string
+
+      azure_storage_account:
+        description: 'Storage Account name (3-24 lowercase letters/numbers, globally unique)'
+        required: true
+        default: 'cracktfstatesa'
+        type: string
+
+      azure_service_principal_name:
+        description: 'Name of the new Service Principal to be created for AKS'
+        required: true
+        default: 'crack-detection-aks-sp'
+        type: string
+
+jobs:
+  terraform-setup-azure:
+    name: Setup Azure Prerequisites
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: ./azure-service-principal
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Print Account & Target Info
+        run: |
+          ACCT="${{ github.event.inputs.azure_account_name }}"
+          if [ "$ACCT" = "custom" ]; then
+            ACCT="${{ github.event.inputs.azure_custom_account_name }}"
+          fi
+          if [ -z "$ACCT" ]; then
+            ACCT="maheshrajannan"
+          fi
+
+          SUB_ID="${{ github.event.inputs.azure_subscription_id }}"
+          SUB_PREVIEW="${SUB_ID:0:8}...${SUB_ID: -4}"
+
+          RAW_SECRET="${{ github.event.inputs.azure_admin_client_secret }}"
+          if [ -n "$RAW_SECRET" ]; then
+            SECRET_15="${RAW_SECRET:0:15}"
+            SPACED_15=$(echo "$SECRET_15" | sed 's/./& /g')
+          else
+            SPACED_15="Using default secret key"
+          fi
+
+          echo "======================================================"
+          echo " Target Azure Account Label: $ACCT"
+          echo " Azure Subscription ID:      $SUB_PREVIEW"
+          echo " Azure Tenant ID:            ${{ github.event.inputs.azure_tenant_id }}"
+          echo " Azure Location:             ${{ github.event.inputs.azure_location }}"
+          echo " Target Resource Group:      ${{ github.event.inputs.azure_resource_group }}"
+          echo " Target Storage Account:     ${{ github.event.inputs.azure_storage_account }}"
+          echo " Target Service Principal:   ${{ github.event.inputs.azure_service_principal_name }}"
+          echo " Admin Secret Preview:       $SPACED_15"
+          echo "======================================================"
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.0
+
+      - name: Authenticate to Azure
+        env:
+          INPUT_CLIENT_ID: ${{ github.event.inputs.azure_admin_client_id }}
+          INPUT_CLIENT_SECRET: ${{ github.event.inputs.azure_admin_client_secret }}
+          SECRET_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          SECRET_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          TENANT_ID: ${{ github.event.inputs.azure_tenant_id }}
+          SUBSCRIPTION_ID: ${{ github.event.inputs.azure_subscription_id }}
+        run: |
+          CLIENT_ID="${INPUT_CLIENT_ID:-$SECRET_CLIENT_ID}"
+          CLIENT_SECRET="${INPUT_CLIENT_SECRET:-$SECRET_CLIENT_SECRET}"
+
+          if [ -z "$CLIENT_ID" ] || [ -z "$CLIENT_SECRET" ]; then
+            echo "ERROR: Azure Client ID and Client Secret are required. Provide them in inputs or repository secrets."
+            exit 1
+          fi
+
+          echo "::add-mask::$CLIENT_SECRET"
+          echo "ARM_CLIENT_ID=$CLIENT_ID" >> $GITHUB_ENV
+          echo "ARM_CLIENT_SECRET=$CLIENT_SECRET" >> $GITHUB_ENV
+          echo "ARM_SUBSCRIPTION_ID=$SUBSCRIPTION_ID" >> $GITHUB_ENV
+          echo "ARM_TENANT_ID=$TENANT_ID" >> $GITHUB_ENV
+
+          echo "Logging into Azure CLI via Service Principal..."
+          az login --service-principal -u "$CLIENT_ID" -p "$CLIENT_SECRET" --tenant "$TENANT_ID"
+          az account set --subscription "$SUBSCRIPTION_ID"
+          echo "Successfully authenticated to Azure Subscription: $SUBSCRIPTION_ID"
+
+      - name: Terraform Init
+        run: terraform init -input=false
+
+      - name: Terraform Plan
+        run: |
+          if [[ "${{ github.event.inputs.action }}" == "apply" ]]; then
+            terraform plan \
+              -var="subscription_id=${{ github.event.inputs.azure_subscription_id }}" \
+              -var="location=${{ github.event.inputs.azure_location }}" \
+              -var="resource_group_name=${{ github.event.inputs.azure_resource_group }}" \
+              -var="storage_account_name=${{ github.event.inputs.azure_storage_account }}" \
+              -var="service_principal_name=${{ github.event.inputs.azure_service_principal_name }}" \
+              -out=tfplan
+          else
+            terraform plan -destroy \
+              -var="subscription_id=${{ github.event.inputs.azure_subscription_id }}" \
+              -var="location=${{ github.event.inputs.azure_location }}" \
+              -var="resource_group_name=${{ github.event.inputs.azure_resource_group }}" \
+              -var="storage_account_name=${{ github.event.inputs.azure_storage_account }}" \
+              -var="service_principal_name=${{ github.event.inputs.azure_service_principal_name }}" \
+              -out=tfplan
+          fi
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
+
+      - name: Display Created Credentials (Apply Only)
+        if: ${{ github.event.inputs.action == 'apply' }}
+        run: |
+          NEW_CLIENT_ID=$(terraform output -raw azure_client_id)
+          NEW_RG=$(terraform output -raw azure_resource_group_name)
+          NEW_SA=$(terraform output -raw azure_storage_account_name)
+          NEW_CONTAINER=$(terraform output -raw azure_storage_container_name)
+
+          echo "=========================================================="
+          echo " ✅ Azure Foundational Setup Succeeded!"
+          echo "=========================================================="
+          echo " Save these values for the AKS Cluster Deployment pipeline:"
+          echo "   azure_subscription_id : ${{ github.event.inputs.azure_subscription_id }}"
+          echo "   azure_tenant_id       : ${{ github.event.inputs.azure_tenant_id }}"
+          echo "   azure_client_id       : $NEW_CLIENT_ID"
+          echo "   azure_resource_group  : $NEW_RG"
+          echo "   azure_storage_account : $NEW_SA"
+          echo "   azure_storage_container: $NEW_CONTAINER"
+          echo "   azure_location        : ${{ github.event.inputs.azure_location }}"
+          echo "=========================================================="
+
+      - name: Cleanup
+        if: always()
+        run: rm -f tfplan
