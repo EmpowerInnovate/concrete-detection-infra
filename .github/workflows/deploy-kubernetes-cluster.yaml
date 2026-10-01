@@ -25,7 +25,7 @@ on:
   workflow_dispatch:
     inputs:
 
-      # Common 
+      # Common (3 inputs)
       provider:
         description: "Cloud provider to use"
         required: true
@@ -51,7 +51,7 @@ on:
         default: "crack-detection-cluster"
         type: string
 
-      # ---- GCP inputs (fill these if provider = gcp) ----
+      # ---- GCP inputs (fill these if provider = gcp) (8 inputs) ----
       gcp_account_name:
         description: "[GCP] Account Name for logging / verification"
         required: false
@@ -104,7 +104,7 @@ on:
         default: "./gcp-cluster"
         type: string
 
-      # ---- DigitalOcean inputs (fill these if provider = digitalocean) ----
+      # ---- DigitalOcean inputs (fill these if provider = digitalocean) (5 inputs) ----
       do_token:
         description: "[DO] DigitalOcean API token"
         required: false
@@ -132,22 +132,7 @@ on:
         default: "nyc3"
         type: string
 
-      # ---- Azure inputs (fill these if provider = azure) ----
-      azure_account_name:
-        description: "[Azure] Account label for logging / verification"
-        required: false
-        default: "maheshrajannan"
-        type: choice
-        options:
-          - maheshrajannan
-          - empowerinnovate
-          - custom
-
-      azure_custom_account_name:
-        description: "[Azure] Custom Account Name (used only if Account Name above is set to 'custom')"
-        required: false
-        type: string
-
+      # ---- Azure inputs (fill these if provider = azure) (6 inputs, total = 22 <= 25) ----
       azure_subscription_id:
         description: "[Azure] Subscription ID"
         required: false
@@ -178,28 +163,10 @@ on:
         required: false
         type: string
 
-      azure_storage_container:
-        description: "[Azure] Blob Container name for Terraform backend"
-        required: false
-        default: "tfstate"
-        type: string
-
       azure_location:
         description: "[Azure] Region for the AKS cluster  e.g. eastus"
         required: false
         default: "eastus"
-        type: string
-
-      azure_terraform_dir:
-        description: "[Azure] Terraform directory to use  e.g. ./azure-cluster"
-        required: false
-        default: "./azure-cluster"
-        type: string
-
-      azure_node_size:
-        description: "[Azure] Node VM Size  e.g. Standard_D2s_v3"
-        required: false
-        default: "Standard_D2s_v3"
         type: string
 
 jobs:
@@ -254,8 +221,6 @@ jobs:
           echo "  azure_resource_group    : ${{ github.event.inputs.azure_resource_group }}"
           echo "  azure_storage_account   : ${{ github.event.inputs.azure_storage_account }}"
           echo "  azure_location          : ${{ github.event.inputs.azure_location }}"
-          echo "  azure_node_size         : ${{ github.event.inputs.azure_node_size }}"
-          echo "  azure_terraform_dir     : ${{ github.event.inputs.azure_terraform_dir }}"
           echo "================================================"
 
       - name: Print Account & Target Info (GCP)
@@ -284,22 +249,13 @@ jobs:
       - name: Print Account & Target Info (Azure)
         if: ${{ github.event.inputs.provider == 'azure' }}
         run: |
-          ACCT="${{ github.event.inputs.azure_account_name }}"
-          if [ "$ACCT" = "custom" ]; then
-            ACCT="${{ github.event.inputs.azure_custom_account_name }}"
-          fi
-          if [ -z "$ACCT" ]; then
-            ACCT="maheshrajannan"
-          fi
           SUB_ID="${{ github.event.inputs.azure_subscription_id }}"
           echo "======================================================"
-          echo " Target Azure Account Label: $ACCT"
           echo " Azure Subscription ID:      ${SUB_ID:0:8}...${SUB_ID: -4}"
           echo " Azure Tenant ID:            ${{ github.event.inputs.azure_tenant_id }}"
           echo " Azure Location:             ${{ github.event.inputs.azure_location }}"
           echo " Cluster Name:               ${{ github.event.inputs.cluster_name }}"
           echo " Storage Account (State):    ${{ github.event.inputs.azure_storage_account }}"
-          echo " Target Node Size:           ${{ github.event.inputs.azure_node_size }}"
           echo "======================================================"
 
       - name: Validate required inputs
@@ -332,7 +288,7 @@ jobs:
           elif [[ "${{ github.event.inputs.provider }}" == "digitalocean" ]]; then
             echo "dir=${{ github.event.inputs.do_terraform_dir }}" >> "$GITHUB_OUTPUT"
           elif [[ "${{ github.event.inputs.provider }}" == "azure" ]]; then
-            echo "dir=${{ github.event.inputs.azure_terraform_dir }}" >> "$GITHUB_OUTPUT"
+            echo "dir=./azure-cluster" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Setup Terraform
@@ -444,10 +400,7 @@ jobs:
             CLUSTER_NAME="crack-detection-cluster"
           fi
           STORAGE_ACCOUNT="${{ github.event.inputs.azure_storage_account }}"
-          CONTAINER="${{ github.event.inputs.azure_storage_container }}"
-          if [ -z "$CONTAINER" ]; then
-            CONTAINER="tfstate"
-          fi
+          CONTAINER="tfstate"
 
           # Discover or configure the storage account resource group
           SA_RG=$(az storage account list --query "[?name=='$STORAGE_ACCOUNT'].resourceGroup" -o tsv 2>/dev/null || echo "")
@@ -490,7 +443,6 @@ jobs:
           elif [[ "${{ github.event.inputs.provider }}" == "azure" ]]; then
             export TF_VAR_cluster_name="${{ github.event.inputs.cluster_name }}"
             export TF_VAR_location="${{ github.event.inputs.azure_location }}"
-            export TF_VAR_node_size="${{ github.event.inputs.azure_node_size }}"
             if [ -n "${{ github.event.inputs.azure_resource_group }}" ]; then
               export TF_VAR_resource_group_name="${{ github.event.inputs.azure_resource_group }}"
             fi
@@ -518,7 +470,6 @@ jobs:
           elif [[ "${{ github.event.inputs.provider }}" == "azure" ]]; then
             export TF_VAR_cluster_name="${{ github.event.inputs.cluster_name }}"
             export TF_VAR_location="${{ github.event.inputs.azure_location }}"
-            export TF_VAR_node_size="${{ github.event.inputs.azure_node_size }}"
             if [ -n "${{ github.event.inputs.azure_resource_group }}" ]; then
               export TF_VAR_resource_group_name="${{ github.event.inputs.azure_resource_group }}"
             fi
@@ -633,7 +584,6 @@ jobs:
           elif [[ "${{ github.event.inputs.provider }}" == "azure" ]]; then
             export TF_VAR_cluster_name="${{ github.event.inputs.cluster_name }}"
             export TF_VAR_location="${{ github.event.inputs.azure_location }}"
-            export TF_VAR_node_size="${{ github.event.inputs.azure_node_size }}"
             if [ -n "${{ github.event.inputs.azure_resource_group }}" ]; then
               export TF_VAR_resource_group_name="${{ github.event.inputs.azure_resource_group }}"
             fi
