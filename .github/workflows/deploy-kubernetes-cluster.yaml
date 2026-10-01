@@ -401,6 +401,10 @@ jobs:
           fi
           STORAGE_ACCOUNT="${{ github.event.inputs.azure_storage_account }}"
           CONTAINER="tfstate"
+          LOCATION="${{ github.event.inputs.azure_location }}"
+          if [ -z "$LOCATION" ]; then
+            LOCATION="eastus"
+          fi
 
           # Discover or configure the storage account resource group
           SA_RG=$(az storage account list --query "[?name=='$STORAGE_ACCOUNT'].resourceGroup" -o tsv 2>/dev/null || echo "")
@@ -410,6 +414,31 @@ jobs:
           if [ -z "$SA_RG" ]; then
             SA_RG="crack-detection-tfstate-rg"
           fi
+
+          # Ensure the backend Resource Group exists
+          if ! az group show --name "$SA_RG" &>/dev/null; then
+            echo "Resource Group '$SA_RG' does not exist. Creating in $LOCATION..."
+            az group create --name "$SA_RG" --location "$LOCATION" --tags Environment=production Project=crack-detection
+          fi
+
+          # Ensure the backend Storage Account exists
+          if ! az storage account show --name "$STORAGE_ACCOUNT" --resource-group "$SA_RG" &>/dev/null; then
+            echo "Storage Account '$STORAGE_ACCOUNT' does not exist. Creating in $SA_RG ($LOCATION)..."
+            az storage account create \
+              --name "$STORAGE_ACCOUNT" \
+              --resource-group "$SA_RG" \
+              --location "$LOCATION" \
+              --sku Standard_LRS \
+              --min-tls-version TLS1_2 \
+              --allow-blob-public-access false
+          fi
+
+          # Ensure the Blob Container exists
+          echo "Ensuring backend blob container '$CONTAINER' exists in storage account '$STORAGE_ACCOUNT'..."
+          az storage container create \
+            --name "$CONTAINER" \
+            --account-name "$STORAGE_ACCOUNT" \
+            --auth-mode login 2>/dev/null || true
 
           echo "Initializing Terraform Azure backend:"
           echo "  resource_group_name  = $SA_RG"

@@ -24,11 +24,6 @@ output "kubeconfig" {
   sensitive   = true
 }
 
-output "node_pool_id" {
-  description = "The ID of the default autoscaling node pool"
-  value       = azurerm_kubernetes_cluster.crack_detection.default_node_pool[0].id
-}
-
 output "kubectl_config" {
   description = "Command to configure local kubectl to connect to the AKS cluster"
   value       = "az aks get-credentials --resource-group ${local.rg_name} --name ${azurerm_kubernetes_cluster.crack_detection.name} --overwrite-existing"

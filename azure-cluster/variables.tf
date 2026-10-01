@@ -10,7 +10,7 @@ variable "location" {
 }
 
 variable "resource_group_name" {
-  description = "The name of the resource group. If create_resource_group is true and this is empty, '${var.cluster_name}-rg' is used."
+  description = "The name of the resource group. If create_resource_group is true and this is empty, '<cluster_name>-rg' is used."
   type        = string
   default     = ""
 }
