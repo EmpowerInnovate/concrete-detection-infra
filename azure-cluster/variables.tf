@@ -24,7 +24,7 @@ variable "create_resource_group" {
 variable "node_size" {
   description = "Azure VM size for the Kubernetes node pool"
   type        = string
-  default     = "Standard_D2s_v3"
+  default     = "Standard_B2s"
 }
 
 variable "min_nodes" {
