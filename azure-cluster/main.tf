@@ -1,4 +1,11 @@
+variable "subscription_id" {
+  description = "Azure Subscription ID (passed via ARM_SUBSCRIPTION_ID env var)"
+  type        = string
+  default     = null
+}
+
 provider "azurerm" {
+  subscription_id = var.subscription_id
   features {
     resource_group {
       prevent_deletion_if_contains_resources = false
@@ -35,15 +42,14 @@ resource "azurerm_kubernetes_cluster" "crack_detection" {
   kubernetes_version  = var.kubernetes_version
 
   default_node_pool {
-    name                = "default"
-    node_count          = var.min_nodes
-    vm_size             = var.node_size
-    enable_auto_scaling = true
-    min_count           = var.min_nodes
-    max_count           = var.max_nodes
-    os_disk_size_gb     = var.os_disk_size_gb
-    type                = "VirtualMachineScaleSets"
-    tags                = var.tags
+    name                 = "default"
+    node_count           = var.min_nodes
+    vm_size              = var.node_size
+    auto_scaling_enabled = true
+    min_count            = var.min_nodes
+    max_count            = var.max_nodes
+    os_disk_size_gb      = var.os_disk_size_gb
+    tags                 = var.tags
   }
 
   identity {
