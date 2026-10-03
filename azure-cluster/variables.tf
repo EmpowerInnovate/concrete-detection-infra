@@ -24,7 +24,7 @@ variable "create_resource_group" {
 variable "node_size" {
   description = "Azure VM size for the Kubernetes node pool"
   type        = string
-  default     = "Standard_B2s"
+  default     = "Standard_D2_v4"
 }
 
 variable "min_nodes" {
@@ -36,7 +36,7 @@ variable "min_nodes" {
 variable "max_nodes" {
   description = "Maximum number of nodes in the autoscaling node pool"
   type        = number
-  default     = 5
+  default     = 2
 }
 
 variable "os_disk_size_gb" {
