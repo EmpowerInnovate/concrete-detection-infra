@@ -41,6 +41,8 @@ resource "azurerm_kubernetes_cluster" "crack_detection" {
   dns_prefix          = replace(var.cluster_name, "_", "-")
   kubernetes_version  = var.kubernetes_version
 
+  oidc_issuer_enabled = true # AKS cannot disable OIDC issuer once enabled
+
   default_node_pool {
     name                 = "default"
     node_count           = var.min_nodes
