@@ -1,0 +1,194 @@
+name: Setup AWS IAM User & Backend
+
+# ===========================================================
+# PHASE 1: AWS IAM USER & BACKEND SETUP
+# ===========================================================
+# This workflow sets up:
+# 1. An S3 bucket for Terraform remote state
+# 2. A DynamoDB table for Terraform state locking
+# 3. An IAM user with PowerUserAccess + IAMFullAccess for EKS deployments
+#
+# Once completed, create an access key for the IAM user in the AWS console
+# (IAM > Users > <user> > Security credentials > Create access key) and save it
+# as the AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY repository secrets for
+# the "Deploy Kubernetes Cluster" workflow.
+# ===========================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Terraform action to perform'
+        required: true
+        default: 'apply'
+        type: choice
+        options:
+          - apply
+          - destroy
+
+      aws_account_name:
+        description: 'AWS Account / Owner label for logging & verification'
+        required: true
+        default: 'maheshrajannan'
+        type: choice
+        options:
+          - maheshrajannan
+          - empowerinnovate
+          - custom
+
+      aws_custom_account_name:
+        description: 'Custom AWS Account Name (used only if Account Name above is set to "custom")'
+        required: false
+        type: string
+
+      aws_admin_access_key_id:
+        description: 'Existing AWS Admin Access Key ID (if left blank, uses secrets.AWS_ADMIN_ACCESS_KEY_ID)'
+        required: false
+        type: string
+
+      aws_admin_secret_access_key:
+        description: 'Existing AWS Admin Secret Access Key (if left blank, uses secrets.AWS_ADMIN_SECRET_ACCESS_KEY)'
+        required: false
+        type: string
+
+      aws_region:
+        description: 'AWS Region for backend state'
+        required: true
+        default: 'us-east-1'
+        type: string
+
+      aws_state_bucket:
+        description: 'S3 bucket name for Terraform backend (globally unique)'
+        required: true
+        default: 'crack-detection-tfstate'
+        type: string
+
+      aws_lock_table:
+        description: 'DynamoDB table name for Terraform state locking'
+        required: true
+        default: 'crack-detection-tflock'
+        type: string
+
+      aws_iam_user_name:
+        description: 'Name of the new IAM user to be created for EKS'
+        required: true
+        default: 'crack-detection-eks-deployer'
+        type: string
+
+jobs:
+  terraform-setup-aws:
+    name: Setup AWS Prerequisites
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: ./aws-iam-user
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Print Account & Target Info
+        run: |
+          ACCT="${{ github.event.inputs.aws_account_name }}"
+          if [ "$ACCT" = "custom" ]; then
+            ACCT="${{ github.event.inputs.aws_custom_account_name }}"
+          fi
+          if [ -z "$ACCT" ]; then
+            ACCT="maheshrajannan"
+          fi
+
+          RAW_SECRET="${{ github.event.inputs.aws_admin_secret_access_key }}"
+          if [ -n "$RAW_SECRET" ]; then
+            SECRET_15="${RAW_SECRET:0:15}"
+            SPACED_15=$(echo "$SECRET_15" | sed 's/./& /g')
+          else
+            SPACED_15="Using default secret key"
+          fi
+
+          echo "======================================================"
+          echo " Target AWS Account Label:   $ACCT"
+          echo " AWS Region:                 ${{ github.event.inputs.aws_region }}"
+          echo " Target State Bucket:        ${{ github.event.inputs.aws_state_bucket }}"
+          echo " Target Lock Table:          ${{ github.event.inputs.aws_lock_table }}"
+          echo " Target IAM User:            ${{ github.event.inputs.aws_iam_user_name }}"
+          echo " Admin Secret Preview:       $SPACED_15"
+          echo "======================================================"
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.0
+
+      - name: Authenticate to AWS
+        env:
+          INPUT_ACCESS_KEY_ID: ${{ github.event.inputs.aws_admin_access_key_id }}
+          INPUT_SECRET_ACCESS_KEY: ${{ github.event.inputs.aws_admin_secret_access_key }}
+          SECRET_ACCESS_KEY_ID: ${{ secrets.AWS_ADMIN_ACCESS_KEY_ID }}
+          SECRET_SECRET_ACCESS_KEY: ${{ secrets.AWS_ADMIN_SECRET_ACCESS_KEY }}
+          REGION: ${{ github.event.inputs.aws_region }}
+        run: |
+          ACCESS_KEY_ID="${INPUT_ACCESS_KEY_ID:-$SECRET_ACCESS_KEY_ID}"
+          SECRET_ACCESS_KEY="${INPUT_SECRET_ACCESS_KEY:-$SECRET_SECRET_ACCESS_KEY}"
+
+          if [ -z "$ACCESS_KEY_ID" ] || [ -z "$SECRET_ACCESS_KEY" ]; then
+            echo "ERROR: AWS Access Key ID and Secret Access Key are required. Provide them in inputs or repository secrets."
+            exit 1
+          fi
+
+          echo "::add-mask::$SECRET_ACCESS_KEY"
+          echo "AWS_ACCESS_KEY_ID=$ACCESS_KEY_ID" >> $GITHUB_ENV
+          echo "AWS_SECRET_ACCESS_KEY=$SECRET_ACCESS_KEY" >> $GITHUB_ENV
+          echo "AWS_REGION=$REGION" >> $GITHUB_ENV
+
+          export AWS_ACCESS_KEY_ID="$ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$SECRET_ACCESS_KEY"
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "Successfully authenticated to AWS Account: ${ACCOUNT_ID:0:4}...${ACCOUNT_ID: -4}"
+
+      - name: Terraform Init
+        run: terraform init -input=false
+
+      - name: Terraform Plan
+        run: |
+          if [[ "${{ github.event.inputs.action }}" == "apply" ]]; then
+            terraform plan \
+              -var="region=${{ github.event.inputs.aws_region }}" \
+              -var="state_bucket_name=${{ github.event.inputs.aws_state_bucket }}" \
+              -var="lock_table_name=${{ github.event.inputs.aws_lock_table }}" \
+              -var="iam_user_name=${{ github.event.inputs.aws_iam_user_name }}" \
+              -out=tfplan
+          else
+            terraform plan -destroy \
+              -var="region=${{ github.event.inputs.aws_region }}" \
+              -var="state_bucket_name=${{ github.event.inputs.aws_state_bucket }}" \
+              -var="lock_table_name=${{ github.event.inputs.aws_lock_table }}" \
+              -var="iam_user_name=${{ github.event.inputs.aws_iam_user_name }}" \
+              -out=tfplan
+          fi
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
+
+      - name: Display Created Resources (Apply Only)
+        if: ${{ github.event.inputs.action == 'apply' }}
+        run: |
+          NEW_USER=$(terraform output -raw aws_iam_user_name)
+          NEW_BUCKET=$(terraform output -raw aws_state_bucket)
+          NEW_TABLE=$(terraform output -raw aws_lock_table)
+
+          echo "=========================================================="
+          echo " ✅ AWS Foundational Setup Succeeded!"
+          echo "=========================================================="
+          echo " Next: create an access key for IAM user '$NEW_USER' in the"
+          echo " AWS console and save it as repository secrets:"
+          echo "   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY"
+          echo ""
+          echo " Save these values for the EKS Cluster Deployment pipeline:"
+          echo "   aws_region            : ${{ github.event.inputs.aws_region }}"
+          echo "   aws_state_bucket      : $NEW_BUCKET"
+          echo "   aws_lock_table        : $NEW_TABLE"
+          echo "=========================================================="
+
+      - name: Cleanup
+        if: always()
+        run: rm -f tfplan
