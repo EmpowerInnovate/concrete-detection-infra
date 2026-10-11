@@ -9,9 +9,8 @@ name: Setup AWS IAM User & Backend
 # 3. An IAM user with PowerUserAccess + IAMFullAccess for EKS deployments
 #
 # Once completed, create an access key for the IAM user in the AWS console
-# (IAM > Users > <user> > Security credentials > Create access key) and save it
-# as the AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY repository secrets for
-# the "Deploy Kubernetes Cluster" workflow.
+# (IAM > Users > <user> > Security credentials > Create access key) and pass it
+# as aws_access_key_id / aws_secret_access_key to the "Deploy Kubernetes Cluster" workflow.
 # ===========================================================
 
 on:
@@ -42,13 +41,13 @@ on:
         type: string
 
       aws_admin_access_key_id:
-        description: 'Existing AWS Admin Access Key ID (if left blank, uses secrets.AWS_ADMIN_ACCESS_KEY_ID)'
-        required: false
+        description: 'Existing AWS Admin Access Key ID'
+        required: true
         type: string
 
       aws_admin_secret_access_key:
-        description: 'Existing AWS Admin Secret Access Key (if left blank, uses secrets.AWS_ADMIN_SECRET_ACCESS_KEY)'
-        required: false
+        description: 'Existing AWS Admin Secret Access Key'
+        required: true
         type: string
 
       aws_region:
@@ -98,21 +97,14 @@ jobs:
             ACCT="maheshrajannan"
           fi
 
-          RAW_SECRET="${{ github.event.inputs.aws_admin_secret_access_key }}"
-          if [ -n "$RAW_SECRET" ]; then
-            SECRET_15="${RAW_SECRET:0:15}"
-            SPACED_15=$(echo "$SECRET_15" | sed 's/./& /g')
-          else
-            SPACED_15="Using default secret key"
-          fi
-
           echo "======================================================"
           echo " Target AWS Account Label:   $ACCT"
           echo " AWS Region:                 ${{ github.event.inputs.aws_region }}"
           echo " Target State Bucket:        ${{ github.event.inputs.aws_state_bucket }}"
           echo " Target Lock Table:          ${{ github.event.inputs.aws_lock_table }}"
           echo " Target IAM User:            ${{ github.event.inputs.aws_iam_user_name }}"
-          echo " Admin Secret Preview:       $SPACED_15"
+          echo " Admin Access Key ID:        ${{ github.event.inputs.aws_admin_access_key_id != '' && 'provided' || 'NOT provided' }}"
+          echo " Admin Secret Access Key:    ${{ github.event.inputs.aws_admin_secret_access_key != '' && 'provided' || 'NOT provided' }}"
           echo "======================================================"
 
       - name: Setup Terraform
@@ -122,17 +114,13 @@ jobs:
 
       - name: Authenticate to AWS
         env:
-          INPUT_ACCESS_KEY_ID: ${{ github.event.inputs.aws_admin_access_key_id }}
-          INPUT_SECRET_ACCESS_KEY: ${{ github.event.inputs.aws_admin_secret_access_key }}
-          SECRET_ACCESS_KEY_ID: ${{ secrets.AWS_ADMIN_ACCESS_KEY_ID }}
-          SECRET_SECRET_ACCESS_KEY: ${{ secrets.AWS_ADMIN_SECRET_ACCESS_KEY }}
+          ACCESS_KEY_ID: ${{ github.event.inputs.aws_admin_access_key_id }}
+          SECRET_ACCESS_KEY: ${{ github.event.inputs.aws_admin_secret_access_key }}
           REGION: ${{ github.event.inputs.aws_region }}
         run: |
-          ACCESS_KEY_ID="${INPUT_ACCESS_KEY_ID:-$SECRET_ACCESS_KEY_ID}"
-          SECRET_ACCESS_KEY="${INPUT_SECRET_ACCESS_KEY:-$SECRET_SECRET_ACCESS_KEY}"
 
           if [ -z "$ACCESS_KEY_ID" ] || [ -z "$SECRET_ACCESS_KEY" ]; then
-            echo "ERROR: AWS Access Key ID and Secret Access Key are required. Provide them in inputs or repository secrets."
+            echo "ERROR: AWS Access Key ID and Secret Access Key are required. Provide them in the workflow inputs."
             exit 1
           fi
 
@@ -180,8 +168,8 @@ jobs:
           echo " ✅ AWS Foundational Setup Succeeded!"
           echo "=========================================================="
           echo " Next: create an access key for IAM user '$NEW_USER' in the"
-          echo " AWS console and save it as repository secrets:"
-          echo "   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY"
+          echo " AWS console and pass it to the Deploy Kubernetes Cluster workflow as:"
+          echo "   aws_access_key_id / aws_secret_access_key"
           echo ""
           echo " Save these values for the EKS Cluster Deployment pipeline:"
           echo "   aws_region            : ${{ github.event.inputs.aws_region }}"

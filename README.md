@@ -35,7 +35,7 @@ For a detailed visual mapping of the IAM role hierarchy and architecture for GCP
 
 ### For AWS (EKS):
 1. An active **AWS Account**.
-2. An **admin IAM access key** (for Phase 1 only), stored as `AWS_ADMIN_ACCESS_KEY_ID` / `AWS_ADMIN_SECRET_ACCESS_KEY` secrets or pasted into the workflow inputs.
+2. An **admin IAM access key** (for Phase 1 only), passed as workflow inputs.
 3. A **deployer IAM user** with `PowerUserAccess` + `IAMFullAccess`, an **S3 bucket** and a **DynamoDB lock table** (all auto-generated in Phase 1).
 
 ---
@@ -86,14 +86,14 @@ Deploying the infrastructure is done in two phases using Gitea / GitHub Actions 
 2. Select the **`Setup AWS IAM User & Backend`** workflow.
 3. Click **Run workflow** and fill in the parameters:
    * **Terraform action**: `apply`
-   * **AWS Admin Access Key ID / Secret**: (Optional) If blank, falls back to `AWS_ADMIN_ACCESS_KEY_ID` / `AWS_ADMIN_SECRET_ACCESS_KEY` secrets.
+   * **AWS Admin Access Key ID / Secret**: Access key of an existing IAM user with `AdministratorAccess`.
    * **AWS Region**: e.g. `us-east-1`.
    * **S3 bucket name**: Globally unique bucket for Terraform state (e.g. `crack-detection-tfstate`).
    * **DynamoDB table**: Lock table name (default `crack-detection-tflock`).
    * **IAM user name**: Name for the new EKS deployer user (e.g. `crack-detection-eks-deployer`).
 4. Click **Run Workflow**.
-5. In the AWS console go to **IAM → Users → `<user>` → Security credentials → Create access key**, and save it as the repository secrets `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
-6. If you used a non-default lock table name, also set the repository **variable** `AWS_LOCK_TABLE`.
+5. In the AWS console go to **IAM → Users → `<user>` → Security credentials → Create access key**, and keep the key ID and secret for Phase 2.
+6. Keep the default lock table name `crack-detection-tflock` — the deploy workflow always uses that name.
 
 *(Alternative: bootstrap AWS locally — including the access key — using [`aws-iam-user/bootstrap-aws.sh`](aws-iam-user/bootstrap-aws.sh).)*
 
@@ -130,9 +130,10 @@ This workflow provisions Kubernetes clusters across any of the supported cloud p
   * `azure_location`: Azure region (e.g. `eastus`)
   * `azure_node_size`: Node VM size (default: `Standard_D2s_v3`)
 * **For AWS**:
+  * `aws_access_key_id`: Deployer IAM user Access Key ID from Phase 1
+  * `aws_secret_access_key`: Deployer IAM user Secret Access Key
   * `aws_region`: AWS region (e.g. `us-east-1`)
   * `aws_state_bucket`: S3 bucket for backend state
-  * Credentials are read from the `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` repository secrets (the workflow is at GitHub's 25-input limit, and secrets keep keys out of run logs)
 
 4. Click **Run Workflow**.
 

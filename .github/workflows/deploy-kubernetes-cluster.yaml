@@ -22,10 +22,9 @@ name: Deploy Kubernetes Cluster (GCP / DigitalOcean / Azure AKS / AWS EKS)
 #
 # AWS (EKS) users:
 #   1. Run "Setup AWS IAM User & Backend" workflow (or aws-iam-user/bootstrap-aws.sh)
-#   2. Save the IAM user's access key as repository secrets
-#      AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
-#   3. Fill in the AWS inputs (aws_region, aws_state_bucket)
-#   4. Optional repository variable AWS_LOCK_TABLE (default: crack-detection-tflock)
+#   2. Create an access key for the deployer IAM user in the AWS console
+#   3. Fill in the AWS inputs (aws_access_key_id, aws_secret_access_key,
+#      aws_region, aws_state_bucket)
 # ============================================================
 
 on:
@@ -59,7 +58,7 @@ on:
         default: "crack-detection-cluster"
         type: string
 
-      # ---- GCP inputs (fill these if provider = gcp) (8 inputs) ----
+      # ---- GCP inputs (fill these if provider = gcp) (7 inputs) ----
       gcp_account_name:
         description: "[GCP] Account Name for logging / verification"
         required: false
@@ -106,13 +105,7 @@ on:
         default: "us-central1-a"
         type: string
 
-      gcp_terraform_dir:
-        description: "[GCP] Terraform directory to use  e.g. ./gcp-cluster"
-        required: false
-        default: "./gcp-cluster"
-        type: string
-
-      # ---- DigitalOcean inputs (fill these if provider = digitalocean) (5 inputs) ----
+      # ---- DigitalOcean inputs (fill these if provider = digitalocean) (4 inputs) ----
       do_token:
         description: "[DO] DigitalOcean API token"
         required: false
@@ -126,12 +119,6 @@ on:
       do_secret_key:
         description: "[DO] Spaces secret key (Terraform backend)"
         required: false
-        type: string
-
-      do_terraform_dir:
-        description: "[DO] Terraform directory to use  e.g. ./digitalocean-cluster"
-        required: false
-        default: "./digitalocean-cluster"
         type: string
 
       do_cluster_region:
@@ -177,8 +164,17 @@ on:
         default: "eastus"
         type: string
 
-      # ---- AWS inputs (fill these if provider = aws) (2 inputs, total = 25 = GitHub max) ----
-      # Credentials come from secrets AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+      # ---- AWS inputs (fill these if provider = aws) (4 inputs, total = 25 = GitHub max) ----
+      aws_access_key_id:
+        description: "[AWS] Deployer IAM user Access Key ID"
+        required: false
+        type: string
+
+      aws_secret_access_key:
+        description: "[AWS] Deployer IAM user Secret Access Key"
+        required: false
+        type: string
+
       aws_region:
         description: "[AWS] Region for the EKS cluster  e.g. us-east-1"
         required: false
@@ -228,8 +224,6 @@ jobs:
           echo "  cluster_name            : ${{ github.event.inputs.cluster_name }}"
           echo "  gcp_project_id          : ${{ github.event.inputs.gcp_project_id }}"
           echo "  gcp_cluster_zone        : ${{ github.event.inputs.gcp_cluster_zone }}"
-          echo "  gcp_terraform_dir       : ${{ github.event.inputs.gcp_terraform_dir }}"
-          echo "  do_terraform_dir        : ${{ github.event.inputs.do_terraform_dir }}"
           echo "  do_cluster_region       : ${{ github.event.inputs.do_cluster_region }}"
           echo "  do_token                : ${{ github.event.inputs.do_token != '' && 'provided' || 'NOT provided' }}"
           echo "  do_access_key           : ${{ github.event.inputs.do_access_key != '' && 'provided' || 'NOT provided' }}"
@@ -245,7 +239,8 @@ jobs:
           echo "  azure_location          : ${{ github.event.inputs.azure_location }}"
           echo "  aws_region              : ${{ github.event.inputs.aws_region }}"
           echo "  aws_state_bucket        : ${{ github.event.inputs.aws_state_bucket }}"
-          echo "  aws_credentials         : ${{ secrets.AWS_ACCESS_KEY_ID != '' && 'provided (secrets)' || 'NOT provided' }}"
+          echo "  aws_access_key_id       : ${{ github.event.inputs.aws_access_key_id != '' && 'provided' || 'NOT provided' }}"
+          echo "  aws_secret_access_key   : ${{ github.event.inputs.aws_secret_access_key != '' && 'provided' || 'NOT provided' }}"
           echo "================================================"
 
       - name: Print Account & Target Info (GCP)
@@ -290,7 +285,7 @@ jobs:
           echo " AWS Region:                 ${{ github.event.inputs.aws_region }}"
           echo " Cluster Name:               ${{ github.event.inputs.cluster_name }}"
           echo " S3 Bucket (State):          ${{ github.event.inputs.aws_state_bucket }}"
-          echo " DynamoDB Lock Table:        ${{ vars.AWS_LOCK_TABLE || 'crack-detection-tflock' }}"
+          echo " DynamoDB Lock Table:        crack-detection-tflock"
           echo "======================================================"
 
       - name: Validate required inputs
@@ -315,8 +310,8 @@ jobs:
             echo "Azure inputs validated."
           fi
           if [[ "$PROVIDER" == "aws" ]]; then
-            [[ -z "${{ secrets.AWS_ACCESS_KEY_ID }}" ]]     && echo "ERROR: secrets.AWS_ACCESS_KEY_ID is required" && exit 1
-            [[ -z "${{ secrets.AWS_SECRET_ACCESS_KEY }}" ]] && echo "ERROR: secrets.AWS_SECRET_ACCESS_KEY is required" && exit 1
+            [[ -z "${{ github.event.inputs.aws_access_key_id }}" ]]     && echo "ERROR: aws_access_key_id is required" && exit 1
+            [[ -z "${{ github.event.inputs.aws_secret_access_key }}" ]] && echo "ERROR: aws_secret_access_key is required" && exit 1
             [[ -z "${{ github.event.inputs.aws_region }}" ]]       && echo "ERROR: aws_region is required" && exit 1
             [[ -z "${{ github.event.inputs.aws_state_bucket }}" ]] && echo "ERROR: aws_state_bucket is required" && exit 1
             echo "AWS inputs validated."
@@ -326,9 +321,9 @@ jobs:
         id: setdir
         run: |
           if [[ "${{ github.event.inputs.provider }}" == "gcp" ]]; then
-            echo "dir=${{ github.event.inputs.gcp_terraform_dir }}" >> "$GITHUB_OUTPUT"
+            echo "dir=./gcp-cluster" >> "$GITHUB_OUTPUT"
           elif [[ "${{ github.event.inputs.provider }}" == "digitalocean" ]]; then
-            echo "dir=${{ github.event.inputs.do_terraform_dir }}" >> "$GITHUB_OUTPUT"
+            echo "dir=./digitalocean-cluster" >> "$GITHUB_OUTPUT"
           elif [[ "${{ github.event.inputs.provider }}" == "azure" ]]; then
             echo "dir=./azure-cluster" >> "$GITHUB_OUTPUT"
           elif [[ "${{ github.event.inputs.provider }}" == "aws" ]]; then
@@ -395,10 +390,11 @@ jobs:
       - name: Authenticate to AWS
         if: ${{ github.event.inputs.provider == 'aws' }}
         env:
-          ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          ACCESS_KEY_ID: ${{ github.event.inputs.aws_access_key_id }}
+          SECRET_ACCESS_KEY: ${{ github.event.inputs.aws_secret_access_key }}
           REGION: ${{ github.event.inputs.aws_region }}
         run: |
+          echo "::add-mask::$SECRET_ACCESS_KEY"
           echo "AWS_ACCESS_KEY_ID=$ACCESS_KEY_ID" >> $GITHUB_ENV
           echo "AWS_SECRET_ACCESS_KEY=$SECRET_ACCESS_KEY" >> $GITHUB_ENV
           echo "AWS_REGION=$REGION" >> $GITHUB_ENV
@@ -521,7 +517,7 @@ jobs:
             CLUSTER_NAME="crack-detection-cluster"
           fi
           BUCKET="${{ github.event.inputs.aws_state_bucket }}"
-          LOCK_TABLE="${{ vars.AWS_LOCK_TABLE || 'crack-detection-tflock' }}"
+          LOCK_TABLE="crack-detection-tflock"
           REGION="${{ github.event.inputs.aws_region }}"
 
           # Ensure the backend S3 bucket exists
