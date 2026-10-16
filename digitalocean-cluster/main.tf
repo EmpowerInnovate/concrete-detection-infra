@@ -35,13 +35,14 @@ variable "cluster_name" {
   type        = string
 }
 
+# nyc3 currently rejects new DOKS clusters with "region has insufficient
+# capacity" for every node size, so default to sfo3.
 variable "region" {
   description = "DigitalOcean region"
-  default     = "nyc3"
+  default     = "sfo3"
 }
 
-# s-1vcpu-2gb is below DOKS's recommended minimum and frequently hits
-# "region has insufficient capacity" errors (e.g. in nyc3).
+# s-1vcpu-2gb is below DOKS's recommended minimum node size.
 variable "node_size" {
   description = "Node size for the Kubernetes cluster"
   default     = "s-2vcpu-4gb"

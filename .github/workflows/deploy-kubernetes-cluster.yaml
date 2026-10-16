@@ -122,9 +122,9 @@ on:
         type: string
 
       do_cluster_region:
-        description: "[DO] Region for the DOKS cluster  e.g. nyc3"
+        description: "[DO] Region for the DOKS cluster  e.g. sfo3 (nyc3 has no capacity)"
         required: false
-        default: "nyc3"
+        default: "sfo3"
         type: string
 
       # ---- Azure inputs (fill these if provider = azure) (7 inputs) ----
