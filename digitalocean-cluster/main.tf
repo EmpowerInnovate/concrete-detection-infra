@@ -40,9 +40,11 @@ variable "region" {
   default     = "nyc3"
 }
 
+# s-1vcpu-2gb is below DOKS's recommended minimum and frequently hits
+# "region has insufficient capacity" errors (e.g. in nyc3).
 variable "node_size" {
   description = "Node size for the Kubernetes cluster"
-  default     = "s-1vcpu-2gb"
+  default     = "s-2vcpu-4gb"
 }
 
 # Autoscaling: minimum number of nodes
