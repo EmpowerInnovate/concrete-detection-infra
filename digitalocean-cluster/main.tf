@@ -84,6 +84,13 @@ resource "digitalocean_kubernetes_cluster" "crack-detection-cluster" {
     min_nodes  = var.min_nodes
     max_nodes  = var.max_nodes
   }
+
+  # The workflow may fall back to another region when DOKS has no capacity,
+  # so later applies must not replace an existing cluster just because
+  # var.region differs. To move regions, destroy and re-apply.
+  lifecycle {
+    ignore_changes = [region]
+  }
 }
 
 # ─── Outputs ──────────────────────────────────────────────────────────────────
@@ -95,6 +102,11 @@ output "kubeconfig" {
 
 output "cluster_endpoint" {
   value = digitalocean_kubernetes_cluster.crack-detection-cluster.endpoint
+}
+
+output "region" {
+  description = "Region the cluster was actually created in"
+  value       = digitalocean_kubernetes_cluster.crack-detection-cluster.region
 }
 
 output "cluster_id" {

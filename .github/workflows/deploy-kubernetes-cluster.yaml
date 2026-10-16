@@ -652,9 +652,12 @@ jobs:
 
           # DigitalOcean: DOKS often returns 422 "region has insufficient capacity".
           # A failed create leaves nothing in state, so retry in other regions.
+          echo "::group::Apply in $TF_VAR_region"
           if terraform apply -auto-approve tfplan 2>&1 | tee apply.log; [[ ${PIPESTATUS[0]} -eq 0 ]]; then
+            echo "::endgroup::"
             exit 0
           fi
+          echo "::endgroup::"
           if ! grep -q "insufficient capacity" apply.log; then
             exit 1
           fi
@@ -662,12 +665,15 @@ jobs:
           FALLBACK_REGIONS="sfo3 nyc1 tor1 ams3 fra1 lon1 blr1 sgp1 syd1"
           for REGION in $FALLBACK_REGIONS; do
             [[ "$REGION" == "$TF_VAR_region" ]] && continue
-            echo "::warning::No DOKS capacity in $TF_VAR_region, retrying in $REGION..."
+            echo "No DOKS capacity in $TF_VAR_region (expected, see collapsed log above), retrying in $REGION..."
             export TF_VAR_region="$REGION"
+            echo "::group::Apply in $REGION"
             if terraform apply -auto-approve 2>&1 | tee apply.log; [[ ${PIPESTATUS[0]} -eq 0 ]]; then
-              echo "::notice::DOKS cluster created in region $REGION"
+              echo "::endgroup::"
+              echo "::notice::DOKS cluster created in region $REGION (requested region had no capacity)"
               exit 0
             fi
+            echo "::endgroup::"
             if ! grep -q "insufficient capacity" apply.log; then
               exit 1
             fi
