@@ -443,6 +443,17 @@ jobs:
             # Auth/permission errors won't fix themselves, so don't retry them.
             if grep -qE "AccessDenied|InvalidAccessKeyId|SignatureDoesNotMatch|StatusCode: 403" init.log; then
               echo "::error::Spaces rejected the do_access_key/do_secret_key for bucket 'terraform-crack-detection' (nyc3). Check that the key pair is current, belongs to the same DO account/team that owns the bucket, and (if it is a limited-access key) has read/write on that bucket."
+              echo "::group::Spaces key diagnostics"
+              AK="${{ github.event.inputs.do_access_key }}"
+              echo "Access key: ${AK:0:6}... (length ${#AK}, expected 20)"
+              for R in nyc3 sfo3 ams3 fra1 sgp1 syd1 blr1 lon1 tor1 atl1; do
+                BUCKETS=$(AWS_ACCESS_KEY_ID="$AK" AWS_SECRET_ACCESS_KEY="${{ github.event.inputs.do_secret_key }}" \
+                  aws s3api list-buckets --region us-east-1 --endpoint-url "https://$R.digitaloceanspaces.com" \
+                  --query 'Buckets[].Name' --output text 2>&1) || BUCKETS="(error: $(echo "$BUCKETS" | tail -1))"
+                echo "  $R: ${BUCKETS:-(none)}"
+              done
+              echo "If 'terraform-crack-detection' is not listed under nyc3, the key belongs to a different account/team, is a limited-access key without this bucket, or your bucket is in another region (nyc3's name is then owned by someone else)."
+              echo "::endgroup::"
               exit 1
             fi
             if [[ $attempt -lt 3 ]]; then
