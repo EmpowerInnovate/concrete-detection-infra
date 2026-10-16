@@ -3,7 +3,7 @@ terraform {
     endpoints = {
       s3 = "https://nyc3.digitaloceanspaces.com"
     }
-    bucket                      = "terraform-crack-detection-1"
+    bucket                      = "terraform-crack-detection"
     key                         = "DO-cluster/terraform.tfstate"
     region                      = "us-east-1"
     skip_credentials_validation = true

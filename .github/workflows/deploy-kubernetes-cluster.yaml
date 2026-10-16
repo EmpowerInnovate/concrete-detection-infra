@@ -442,7 +442,7 @@ jobs:
             fi
             # Auth/permission errors won't fix themselves, so don't retry them.
             if grep -qE "AccessDenied|InvalidAccessKeyId|SignatureDoesNotMatch|StatusCode: 403" init.log; then
-              echo "::error::Spaces rejected the do_access_key/do_secret_key for bucket 'terraform-crack-detection-1' (nyc3). Check that the key pair is current, belongs to the same DO account/team that owns the bucket, and (if it is a limited-access key) has read/write on that bucket."
+              echo "::error::Spaces rejected the do_access_key/do_secret_key for bucket 'terraform-crack-detection' (nyc3). Check that the key pair is current, belongs to the same DO account/team that owns the bucket, and (if it is a limited-access key) has read/write on that bucket."
               exit 1
             fi
             if [[ $attempt -lt 3 ]]; then
