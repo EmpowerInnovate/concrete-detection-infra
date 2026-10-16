@@ -598,6 +598,30 @@ jobs:
           fi
         working-directory: ${{ steps.setdir.outputs.dir }}
 
+      - name: Check DigitalOcean account status
+        if: ${{ github.event.inputs.action == 'apply' && github.event.inputs.provider == 'digitalocean' }}
+        env:
+          DO_TOKEN: ${{ github.event.inputs.do_token }}
+        run: |
+          ACCOUNT=$(curl -sf -H "Authorization: Bearer $DO_TOKEN" https://api.digitalocean.com/v2/account) \
+            || { echo "::error::Could not query the DigitalOcean account API, check do_token"; exit 1; }
+          echo "$ACCOUNT" | jq '.account | {status, status_message, email_verified, droplet_limit, volume_limit}'
+          STATUS=$(echo "$ACCOUNT" | jq -r '.account.status')
+          LIMIT=$(echo "$ACCOUNT" | jq -r '.account.droplet_limit')
+          DROPLETS=$(curl -sf -H "Authorization: Bearer $DO_TOKEN" "https://api.digitalocean.com/v2/droplets?per_page=1" | jq -r '.meta.total')
+          echo "Droplets in use: $DROPLETS / $LIMIT"
+          if [[ "$STATUS" != "active" ]]; then
+            echo "::error::DigitalOcean account status is '$STATUS': $(echo "$ACCOUNT" | jq -r '.account.status_message'). Resolve this in the DO dashboard before creating a cluster."
+            exit 1
+          fi
+          if [[ "$(echo "$ACCOUNT" | jq -r '.account.email_verified')" != "true" ]]; then
+            echo "::warning::DigitalOcean account email is not verified; cluster creation may be rejected."
+          fi
+          if (( DROPLETS >= LIMIT )); then
+            echo "::error::Droplet limit reached ($DROPLETS/$LIMIT). Request a limit increase in DO Settings -> Account limits."
+            exit 1
+          fi
+
       - name: Terraform Apply
         if: ${{ github.event.inputs.action == 'apply' }}
         env:
@@ -620,7 +644,37 @@ jobs:
             export TF_VAR_cluster_name="${{ github.event.inputs.cluster_name }}"
             export TF_VAR_region="${{ github.event.inputs.aws_region }}"
           fi
-          terraform apply -auto-approve tfplan
+
+          if [[ "${{ github.event.inputs.provider }}" != "digitalocean" ]]; then
+            terraform apply -auto-approve tfplan
+            exit 0
+          fi
+
+          # DigitalOcean: DOKS often returns 422 "region has insufficient capacity".
+          # A failed create leaves nothing in state, so retry in other regions.
+          if terraform apply -auto-approve tfplan 2>&1 | tee apply.log; [[ ${PIPESTATUS[0]} -eq 0 ]]; then
+            exit 0
+          fi
+          if ! grep -q "insufficient capacity" apply.log; then
+            exit 1
+          fi
+
+          FALLBACK_REGIONS="sfo3 nyc1 tor1 ams3 fra1 lon1 blr1 sgp1 syd1"
+          for REGION in $FALLBACK_REGIONS; do
+            [[ "$REGION" == "$TF_VAR_region" ]] && continue
+            echo "::warning::No DOKS capacity in $TF_VAR_region, retrying in $REGION..."
+            export TF_VAR_region="$REGION"
+            if terraform apply -auto-approve 2>&1 | tee apply.log; [[ ${PIPESTATUS[0]} -eq 0 ]]; then
+              echo "::notice::DOKS cluster created in region $REGION"
+              exit 0
+            fi
+            if ! grep -q "insufficient capacity" apply.log; then
+              exit 1
+            fi
+          done
+
+          echo "::error::Every region returned 'insufficient capacity'. This is an account restriction, not a region one: check the 'Check DigitalOcean account status' step, verify billing/payment method, and open a DigitalOcean support ticket to enable Kubernetes or raise limits."
+          exit 1
         working-directory: ${{ steps.setdir.outputs.dir }}
 
       # ==== Pre-destroy: clean up DO LoadBalancers and Volumes via DO API (no kubectl needed) ====
