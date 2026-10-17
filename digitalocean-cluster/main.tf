@@ -3,7 +3,7 @@ terraform {
     endpoints = {
       s3 = "https://nyc3.digitaloceanspaces.com"
     }
-    bucket                      = "terraform-crack-detection-1"
+    bucket                      = "terraform-crack-detection"
     key                         = "DO-cluster/terraform.tfstate"
     region                      = "us-east-1"
     skip_credentials_validation = true
@@ -35,13 +35,14 @@ variable "cluster_name" {
   type        = string
 }
 
+# nyc3 currently rejects new DOKS clusters with "region has insufficient
+# capacity" for every node size, so default to sfo3.
 variable "region" {
   description = "DigitalOcean region"
-  default     = "nyc3"
+  default     = "sfo3"
 }
 
-# s-1vcpu-2gb is below DOKS's recommended minimum and frequently hits
-# "region has insufficient capacity" errors (e.g. in nyc3).
+# s-1vcpu-2gb is below DOKS's recommended minimum node size.
 variable "node_size" {
   description = "Node size for the Kubernetes cluster"
   default     = "s-2vcpu-4gb"
@@ -83,6 +84,13 @@ resource "digitalocean_kubernetes_cluster" "crack-detection-cluster" {
     min_nodes  = var.min_nodes
     max_nodes  = var.max_nodes
   }
+
+  # The workflow may fall back to another region when DOKS has no capacity,
+  # so later applies must not replace an existing cluster just because
+  # var.region differs. To move regions, destroy and re-apply.
+  lifecycle {
+    ignore_changes = [region]
+  }
 }
 
 # ─── Outputs ──────────────────────────────────────────────────────────────────
@@ -94,6 +102,11 @@ output "kubeconfig" {
 
 output "cluster_endpoint" {
   value = digitalocean_kubernetes_cluster.crack-detection-cluster.endpoint
+}
+
+output "region" {
+  description = "Region the cluster was actually created in"
+  value       = digitalocean_kubernetes_cluster.crack-detection-cluster.region
 }
 
 output "cluster_id" {

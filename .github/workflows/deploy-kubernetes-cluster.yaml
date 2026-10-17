@@ -122,9 +122,9 @@ on:
         type: string
 
       do_cluster_region:
-        description: "[DO] Region for the DOKS cluster  e.g. nyc3"
+        description: "[DO] Region for the DOKS cluster  e.g. sfo3 (nyc3 has no capacity)"
         required: false
-        default: "nyc3"
+        default: "sfo3"
         type: string
 
       # ---- Azure inputs (fill these if provider = azure) (7 inputs) ----
@@ -434,10 +434,28 @@ jobs:
           echo "Initializing Terraform DO backend with key=DO-cluster/${CLUSTER_NAME}.tfstate"
           for attempt in 1 2 3; do
             echo "Terraform init attempt $attempt of 3..."
-            terraform init -input=false \
+            if terraform init -input=false \
               -backend-config="access_key=${{ github.event.inputs.do_access_key }}" \
               -backend-config="secret_key=${{ github.event.inputs.do_secret_key }}" \
-              -backend-config="key=DO-cluster/${CLUSTER_NAME}.tfstate" && break
+              -backend-config="key=DO-cluster/${CLUSTER_NAME}.tfstate" 2>&1 | tee init.log; [[ ${PIPESTATUS[0]} -eq 0 ]]; then
+              break
+            fi
+            # Auth/permission errors won't fix themselves, so don't retry them.
+            if grep -qE "AccessDenied|InvalidAccessKeyId|SignatureDoesNotMatch|StatusCode: 403" init.log; then
+              echo "::error::Spaces rejected the do_access_key/do_secret_key for bucket 'terraform-crack-detection' (nyc3). Check that the key pair is current, belongs to the same DO account/team that owns the bucket, and (if it is a limited-access key) has read/write on that bucket."
+              echo "::group::Spaces key diagnostics"
+              AK="${{ github.event.inputs.do_access_key }}"
+              echo "Access key: ${AK:0:6}... (length ${#AK}, expected 20)"
+              for R in nyc3 sfo3 ams3 fra1 sgp1 syd1 blr1 lon1 tor1 atl1; do
+                BUCKETS=$(AWS_ACCESS_KEY_ID="$AK" AWS_SECRET_ACCESS_KEY="${{ github.event.inputs.do_secret_key }}" \
+                  aws s3api list-buckets --region us-east-1 --endpoint-url "https://$R.digitaloceanspaces.com" \
+                  --query 'Buckets[].Name' --output text 2>&1) || BUCKETS="(error: $(echo "$BUCKETS" | tail -1))"
+                echo "  $R: ${BUCKETS:-(none)}"
+              done
+              echo "If 'terraform-crack-detection' is not listed under nyc3, the key belongs to a different account/team, is a limited-access key without this bucket, or your bucket is in another region (nyc3's name is then owned by someone else)."
+              echo "::endgroup::"
+              exit 1
+            fi
             if [[ $attempt -lt 3 ]]; then
               echo "Init failed, retrying in 30s..."
               sleep 30
@@ -598,6 +616,30 @@ jobs:
           fi
         working-directory: ${{ steps.setdir.outputs.dir }}
 
+      - name: Check DigitalOcean account status
+        if: ${{ github.event.inputs.action == 'apply' && github.event.inputs.provider == 'digitalocean' }}
+        env:
+          DO_TOKEN: ${{ github.event.inputs.do_token }}
+        run: |
+          ACCOUNT=$(curl -sf -H "Authorization: Bearer $DO_TOKEN" https://api.digitalocean.com/v2/account) \
+            || { echo "::error::Could not query the DigitalOcean account API, check do_token"; exit 1; }
+          echo "$ACCOUNT" | jq '.account | {status, status_message, email_verified, droplet_limit, volume_limit}'
+          STATUS=$(echo "$ACCOUNT" | jq -r '.account.status')
+          LIMIT=$(echo "$ACCOUNT" | jq -r '.account.droplet_limit')
+          DROPLETS=$(curl -sf -H "Authorization: Bearer $DO_TOKEN" "https://api.digitalocean.com/v2/droplets?per_page=1" | jq -r '.meta.total')
+          echo "Droplets in use: $DROPLETS / $LIMIT"
+          if [[ "$STATUS" != "active" ]]; then
+            echo "::error::DigitalOcean account status is '$STATUS': $(echo "$ACCOUNT" | jq -r '.account.status_message'). Resolve this in the DO dashboard before creating a cluster."
+            exit 1
+          fi
+          if [[ "$(echo "$ACCOUNT" | jq -r '.account.email_verified')" != "true" ]]; then
+            echo "::warning::DigitalOcean account email is not verified; cluster creation may be rejected."
+          fi
+          if (( DROPLETS >= LIMIT )); then
+            echo "::error::Droplet limit reached ($DROPLETS/$LIMIT). Request a limit increase in DO Settings -> Account limits."
+            exit 1
+          fi
+
       - name: Terraform Apply
         if: ${{ github.event.inputs.action == 'apply' }}
         env:
@@ -620,7 +662,43 @@ jobs:
             export TF_VAR_cluster_name="${{ github.event.inputs.cluster_name }}"
             export TF_VAR_region="${{ github.event.inputs.aws_region }}"
           fi
-          terraform apply -auto-approve tfplan
+
+          if [[ "${{ github.event.inputs.provider }}" != "digitalocean" ]]; then
+            terraform apply -auto-approve tfplan
+            exit 0
+          fi
+
+          # DigitalOcean: DOKS often returns 422 "region has insufficient capacity".
+          # A failed create leaves nothing in state, so retry in other regions.
+          echo "::group::Apply in $TF_VAR_region"
+          if terraform apply -auto-approve tfplan 2>&1 | tee apply.log; [[ ${PIPESTATUS[0]} -eq 0 ]]; then
+            echo "::endgroup::"
+            exit 0
+          fi
+          echo "::endgroup::"
+          if ! grep -q "insufficient capacity" apply.log; then
+            exit 1
+          fi
+
+          FALLBACK_REGIONS="sfo3 nyc1 tor1 ams3 fra1 lon1 blr1 sgp1 syd1"
+          for REGION in $FALLBACK_REGIONS; do
+            [[ "$REGION" == "$TF_VAR_region" ]] && continue
+            echo "No DOKS capacity in $TF_VAR_region (expected, see collapsed log above), retrying in $REGION..."
+            export TF_VAR_region="$REGION"
+            echo "::group::Apply in $REGION"
+            if terraform apply -auto-approve 2>&1 | tee apply.log; [[ ${PIPESTATUS[0]} -eq 0 ]]; then
+              echo "::endgroup::"
+              echo "::notice::DOKS cluster created in region $REGION (requested region had no capacity)"
+              exit 0
+            fi
+            echo "::endgroup::"
+            if ! grep -q "insufficient capacity" apply.log; then
+              exit 1
+            fi
+          done
+
+          echo "::error::Every region returned 'insufficient capacity'. This is an account restriction, not a region one: check the 'Check DigitalOcean account status' step, verify billing/payment method, and open a DigitalOcean support ticket to enable Kubernetes or raise limits."
+          exit 1
         working-directory: ${{ steps.setdir.outputs.dir }}
 
       # ==== Pre-destroy: clean up DO LoadBalancers and Volumes via DO API (no kubectl needed) ====
