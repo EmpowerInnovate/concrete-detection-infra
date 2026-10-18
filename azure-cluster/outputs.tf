@@ -16,6 +16,7 @@ output "cluster_id" {
 output "cluster_endpoint" {
   description = "The Kubernetes API server endpoint"
   value       = azurerm_kubernetes_cluster.crack_detection.kube_config[0].host
+  sensitive   = true
 }
 
 output "kubeconfig" {
