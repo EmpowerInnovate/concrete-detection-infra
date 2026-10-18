@@ -1,6 +1,6 @@
-# Multi-Cloud Kubernetes Infrastructure & Deployment Guide (GCP / DigitalOcean / Azure AKS)
+# Multi-Cloud Kubernetes Infrastructure & Deployment Guide (GCP / DigitalOcean / Azure AKS / AWS EKS)
 
-This repository contains the Infrastructure-as-Code (IaC) workflows and Terraform configurations to bootstrap Cloud Credentials and provision production Kubernetes Clusters (GKE, DOKS, AKS) for the Crack Detection Application.
+This repository contains the Infrastructure-as-Code (IaC) workflows and Terraform configurations to bootstrap Cloud Credentials and provision production Kubernetes Clusters (GKE, DOKS, AKS, EKS) for the Crack Detection Application.
 
 For a detailed visual mapping of the IAM role hierarchy and architecture for GCP, refer to the [Service Account Architecture Diagram](service_account_architecture_diagram.md).
 
@@ -13,6 +13,7 @@ For a detailed visual mapping of the IAM role hierarchy and architecture for GCP
 | **Google Cloud (GCP)** | GKE | [`gcp-cluster/`](gcp-cluster/) | [`setup-gcp-service-account.yaml`](.github/workflows/setup-gcp-service-account.yaml) | Google Cloud Storage (GCS) |
 | **DigitalOcean** | DOKS | [`digitalocean-cluster/`](digitalocean-cluster/) | DO API Tokens & Spaces | DigitalOcean Spaces (S3 compatible) |
 | **Microsoft Azure** | AKS | [`azure-cluster/`](azure-cluster/) | [`setup-azure-service-principal.yaml`](.github/workflows/setup-azure-service-principal.yaml) | Azure Blob Storage (`azurerm`) |
+| **Amazon Web Services** | EKS | [`aws-cluster/`](aws-cluster/) | [`setup-aws-iam-user.yaml`](.github/workflows/setup-aws-iam-user.yaml) | Amazon S3 + DynamoDB lock (`s3`) |
 
 ---
 
@@ -31,6 +32,11 @@ For a detailed visual mapping of the IAM role hierarchy and architecture for GCP
 1. An active **Azure Subscription**.
 2. An **Azure Service Principal** with `Contributor` and `User Access Administrator` permissions on the subscription (can be auto-generated in Phase 1).
 3. An **Azure Storage Account** and Blob container (`tfstate`) for Terraform backend state (can be auto-generated in Phase 1).
+
+### For AWS (EKS):
+1. An active **AWS Account**.
+2. An **admin IAM access key** (for Phase 1 only), passed as workflow inputs.
+3. A **deployer IAM user** with `PowerUserAccess` + `IAMFullAccess`, an **S3 bucket** and a **DynamoDB lock table** (all auto-generated in Phase 1).
 
 ---
 
@@ -75,16 +81,32 @@ Deploying the infrastructure is done in two phases using Gitea / GitHub Actions 
 
 *(Alternative: You can also bootstrap Azure locally in 30 seconds using [`azure-service-principal/bootstrap-azure.sh`](azure-service-principal/bootstrap-azure.sh).)*
 
+#### Option C: Amazon Web Services (AWS)
+1. Navigate to the **Actions** tab.
+2. Select the **`Setup AWS IAM User & Backend`** workflow.
+3. Click **Run workflow** and fill in the parameters:
+   * **Terraform action**: `apply`
+   * **AWS Admin Access Key ID / Secret**: Access key of an existing IAM user with `AdministratorAccess`.
+   * **AWS Region**: e.g. `us-east-1`.
+   * **S3 bucket name**: Globally unique bucket for Terraform state (e.g. `crack-detection-tfstate`).
+   * **DynamoDB table**: Lock table name (default `crack-detection-tflock`).
+   * **IAM user name**: Name for the new EKS deployer user (e.g. `crack-detection-eks-deployer`).
+4. Click **Run Workflow**.
+5. In the AWS console go to **IAM → Users → `<user>` → Security credentials → Create access key**, and keep the key ID and secret for Phase 2.
+6. Keep the default lock table name `crack-detection-tflock` — the deploy workflow always uses that name.
+
+*(Alternative: bootstrap AWS locally — including the access key — using [`aws-iam-user/bootstrap-aws.sh`](aws-iam-user/bootstrap-aws.sh).)*
+
 ---
 
-### Phase 2: Kubernetes Cluster Provisioning (GKE / DOKS / AKS)
+### Phase 2: Kubernetes Cluster Provisioning (GKE / DOKS / AKS / EKS)
 
 This workflow provisions Kubernetes clusters across any of the supported cloud providers. Each cluster receives an isolated backend state file based on its `cluster_name`, allowing multiple clusters to run simultaneously.
 
 1. Navigate to the **Actions** tab.
-2. Select the **`Deploy Kubernetes Cluster (GCP / DigitalOcean / Azure AKS)`** workflow.
+2. Select the **`Deploy Kubernetes Cluster (GCP / DigitalOcean / Azure AKS / AWS EKS)`** workflow.
 3. Click **Run workflow** and fill in the parameters:
-   * **Provider**: `gcp`, `digitalocean`, or `azure`
+   * **Provider**: `gcp`, `digitalocean`, `azure`, or `aws`
    * **Action**: `apply` (to create/update) or `destroy` (to delete)
    * **Cluster name**: Name of your cluster (e.g., `crack-detection-cluster`). *Note: Specifying a unique cluster name provisions a new independent cluster without affecting existing clusters. Re-using an existing name updates that specific cluster.*
 
@@ -107,6 +129,11 @@ This workflow provisions Kubernetes clusters across any of the supported cloud p
   * `azure_storage_account`: Storage Account name for backend state
   * `azure_location`: Azure region (e.g. `eastus`)
   * `azure_node_size`: Node VM size (default: `Standard_D2s_v3`)
+* **For AWS**:
+  * `aws_access_key_id`: Deployer IAM user Access Key ID from Phase 1
+  * `aws_secret_access_key`: Deployer IAM user Secret Access Key
+  * `aws_region`: AWS region (e.g. `us-east-1`)
+  * `aws_state_bucket`: S3 bucket for backend state
 
 4. Click **Run Workflow**.
 
@@ -136,6 +163,13 @@ doctl kubernetes cluster kubeconfig save <cluster_name>
 ```bash
 az login --service-principal -u <azure_client_id> -p <azure_client_secret> --tenant <azure_tenant_id>
 az aks get-credentials --resource-group <cluster_name>-rg --name <cluster_name> --overwrite-existing
+kubectl get nodes
+```
+
+### EKS (AWS):
+```bash
+aws configure   # use the deployer IAM user's access key
+aws eks update-kubeconfig --region <aws_region> --name <cluster_name>
 kubectl get nodes
 ```
 
