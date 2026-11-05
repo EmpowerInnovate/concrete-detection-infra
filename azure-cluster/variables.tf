@@ -16,7 +16,7 @@ variable "resource_group_name" {
 }
 
 variable "create_resource_group" {
-  description = "Whether to create a new resource group for the cluster or use an existing one"
+  description = "Whether Terraform creates the resource group or uses an existing one. The deploy workflow sets this automatically (false when the group already exists and is not in state)."
   type        = bool
   default     = true
 }

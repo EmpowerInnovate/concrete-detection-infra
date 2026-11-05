@@ -1,4 +1,7 @@
 terraform {
+  # bucket, key and endpoint are defaults for a local init. The deploy workflow overrides
+  # them (backend.hcl): it finds the 'terraform-crack-detection*' bucket the Spaces key can
+  # see, in whichever region it lives, or creates a uniquely named one.
   backend "s3" {
     endpoints = {
       s3 = "https://nyc3.digitaloceanspaces.com"

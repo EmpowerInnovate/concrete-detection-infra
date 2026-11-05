@@ -57,7 +57,7 @@ on:
         type: string
 
       aws_state_bucket:
-        description: 'S3 bucket name for Terraform backend (globally unique)'
+        description: 'S3 bucket for Terraform state (globally unique; if another account owns it, <name>-<account_id> is used)'
         required: true
         default: 'crack-detection-tfstate'
         type: string
@@ -136,22 +136,68 @@ jobs:
       - name: Terraform Init
         run: terraform init -input=false
 
+      # This workflow keeps no remote state, so every run starts empty. Import whatever
+      # already exists in the account so reruns update it instead of failing with
+      # "already exists" (and so destroy can actually find it).
+      - name: Resolve state bucket & import existing resources
+        env:
+          BUCKET: ${{ github.event.inputs.aws_state_bucket }}
+          TABLE: ${{ github.event.inputs.aws_lock_table }}
+          IAM_USER: ${{ github.event.inputs.aws_iam_user_name }}
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+          # S3 names are global: 403 on head-bucket means another AWS account owns it.
+          bucket_status() {
+            local out
+            if out=$(aws s3api head-bucket --bucket "$1" 2>&1); then echo owned
+            elif grep -qE "403|Forbidden" <<<"$out"; then echo taken
+            else echo free; fi
+          }
+          STATUS=$(bucket_status "$BUCKET")
+          if [[ "$STATUS" == "taken" ]]; then
+            NEW_BUCKET="${BUCKET}-${ACCOUNT_ID}"
+            echo "::warning::S3 bucket '$BUCKET' belongs to another AWS account. Using '$NEW_BUCKET' instead - pass this as aws_state_bucket to the Deploy Kubernetes Cluster workflow."
+            BUCKET="$NEW_BUCKET"
+            STATUS=$(bucket_status "$BUCKET")
+          fi
+
+          {
+            echo "TF_VAR_region=${{ github.event.inputs.aws_region }}"
+            echo "TF_VAR_state_bucket_name=$BUCKET"
+            echo "TF_VAR_lock_table_name=$TABLE"
+            echo "TF_VAR_iam_user_name=$IAM_USER"
+          } >> "$GITHUB_ENV"
+          export TF_VAR_region="${{ github.event.inputs.aws_region }}" TF_VAR_state_bucket_name="$BUCKET" \
+            TF_VAR_lock_table_name="$TABLE" TF_VAR_iam_user_name="$IAM_USER"
+
+          imp() {
+            echo "Importing existing $1 ($2)"
+            terraform import -input=false "$1" "$2" >/dev/null || echo "::notice::Could not import $1 - Terraform will create/configure it."
+          }
+          if [[ "$STATUS" == "owned" ]]; then
+            imp aws_s3_bucket.tfstate "$BUCKET"
+            imp aws_s3_bucket_versioning.tfstate "$BUCKET"
+            imp aws_s3_bucket_server_side_encryption_configuration.tfstate "$BUCKET"
+            imp aws_s3_bucket_public_access_block.tfstate "$BUCKET"
+          fi
+          if aws dynamodb describe-table --table-name "$TABLE" >/dev/null 2>&1; then
+            imp aws_dynamodb_table.tflock "$TABLE"
+          fi
+          if aws iam get-user --user-name "$IAM_USER" >/dev/null 2>&1; then
+            imp aws_iam_user.deployer "$IAM_USER"
+            ATTACHED=$(aws iam list-attached-user-policies --user-name "$IAM_USER" --query 'AttachedPolicies[].PolicyArn' --output text)
+            grep -q "policy/PowerUserAccess" <<<"$ATTACHED" && imp aws_iam_user_policy_attachment.power_user "$IAM_USER/arn:aws:iam::aws:policy/PowerUserAccess"
+            grep -q "policy/IAMFullAccess" <<<"$ATTACHED" && imp aws_iam_user_policy_attachment.iam_full "$IAM_USER/arn:aws:iam::aws:policy/IAMFullAccess"
+          fi
+          true
+
       - name: Terraform Plan
         run: |
           if [[ "${{ github.event.inputs.action }}" == "apply" ]]; then
-            terraform plan \
-              -var="region=${{ github.event.inputs.aws_region }}" \
-              -var="state_bucket_name=${{ github.event.inputs.aws_state_bucket }}" \
-              -var="lock_table_name=${{ github.event.inputs.aws_lock_table }}" \
-              -var="iam_user_name=${{ github.event.inputs.aws_iam_user_name }}" \
-              -out=tfplan
+            terraform plan -out=tfplan
           else
-            terraform plan -destroy \
-              -var="region=${{ github.event.inputs.aws_region }}" \
-              -var="state_bucket_name=${{ github.event.inputs.aws_state_bucket }}" \
-              -var="lock_table_name=${{ github.event.inputs.aws_lock_table }}" \
-              -var="iam_user_name=${{ github.event.inputs.aws_iam_user_name }}" \
-              -out=tfplan
+            terraform plan -destroy -out=tfplan
           fi
 
       - name: Terraform Apply
