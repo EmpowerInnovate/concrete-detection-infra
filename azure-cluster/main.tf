@@ -30,7 +30,7 @@ resource "azurerm_resource_group" "cluster" {
 # Reference existing Resource Group if create_resource_group is false
 data "azurerm_resource_group" "cluster" {
   count = var.create_resource_group ? 0 : 1
-  name  = var.resource_group_name
+  name  = local.target_rg_name
 }
 
 # Azure Kubernetes Service (AKS) Cluster

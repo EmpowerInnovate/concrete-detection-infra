@@ -164,28 +164,75 @@ jobs:
       - name: Terraform Init
         run: terraform init -input=false
 
+      # This workflow keeps no remote state, so every run starts empty. Import whatever
+      # already exists (often the state RG/storage account, which the deploy workflow also
+      # creates on demand) so reruns update it instead of failing with "already exists".
+      - name: Import existing resources
+        env:
+          SUB: ${{ github.event.inputs.azure_subscription_id }}
+          RG: ${{ github.event.inputs.azure_resource_group }}
+          SA: ${{ github.event.inputs.azure_storage_account }}
+          SP_NAME: ${{ github.event.inputs.azure_service_principal_name }}
+        run: |
+          {
+            echo "TF_VAR_subscription_id=$SUB"
+            echo "TF_VAR_location=${{ github.event.inputs.azure_location }}"
+            echo "TF_VAR_resource_group_name=$RG"
+            echo "TF_VAR_storage_account_name=$SA"
+            echo "TF_VAR_service_principal_name=$SP_NAME"
+          } >> "$GITHUB_ENV"
+          export TF_VAR_subscription_id="$SUB" TF_VAR_location="${{ github.event.inputs.azure_location }}" \
+            TF_VAR_resource_group_name="$RG" TF_VAR_storage_account_name="$SA" TF_VAR_service_principal_name="$SP_NAME"
+
+          imp() {
+            echo "Importing existing $1"
+            terraform import -input=false "$1" "$2" >/dev/null || echo "::notice::Could not import $1 - Terraform will create it."
+          }
+
+          if [[ "$(az group exists --name "$RG")" == "true" ]]; then
+            imp azurerm_resource_group.tfstate "/subscriptions/$SUB/resourceGroups/$RG"
+            SA_ID=$(az storage account show -g "$RG" -n "$SA" --query id -o tsv 2>/dev/null || true)
+            if [[ -n "$SA_ID" ]]; then
+              imp azurerm_storage_account.tfstate "$SA_ID"
+              if [[ "$(az storage container exists --account-name "$SA" --name tfstate --query exists -o tsv 2>/dev/null)" == "true" ]]; then
+                imp azurerm_storage_container.tfstate "https://$SA.blob.core.windows.net/tfstate"
+              fi
+            fi
+          fi
+
+          # Reading Entra ID apps needs Microsoft Graph permissions; skip quietly without them.
+          APP_ID=$(az ad app list --display-name "$SP_NAME" --query "[0].id" -o tsv 2>/dev/null || true)
+          if [[ -n "$APP_ID" ]]; then
+            imp azuread_application.sp_app "/applications/$APP_ID"
+            SP_OBJ=$(az ad sp list --display-name "$SP_NAME" --query "[0].id" -o tsv 2>/dev/null || true)
+            if [[ -n "$SP_OBJ" ]]; then
+              imp azuread_service_principal.sp "$SP_OBJ"
+              for ROLE in Contributor "User Access Administrator"; do
+                RA=$(az role assignment list --assignee "$SP_OBJ" --role "$ROLE" --scope "/subscriptions/$SUB" --query "[0].id" -o tsv 2>/dev/null || true)
+                ADDR=$([[ "$ROLE" == Contributor ]] && echo azurerm_role_assignment.sp_contributor || echo azurerm_role_assignment.sp_user_access_admin)
+                [[ -n "$RA" ]] && imp "$ADDR" "$RA"
+              done
+            fi
+          fi
+          true
+
       - name: Terraform Plan
         run: |
           if [[ "${{ github.event.inputs.action }}" == "apply" ]]; then
-            terraform plan \
-              -var="subscription_id=${{ github.event.inputs.azure_subscription_id }}" \
-              -var="location=${{ github.event.inputs.azure_location }}" \
-              -var="resource_group_name=${{ github.event.inputs.azure_resource_group }}" \
-              -var="storage_account_name=${{ github.event.inputs.azure_storage_account }}" \
-              -var="service_principal_name=${{ github.event.inputs.azure_service_principal_name }}" \
-              -out=tfplan
+            terraform plan -out=tfplan
           else
-            terraform plan -destroy \
-              -var="subscription_id=${{ github.event.inputs.azure_subscription_id }}" \
-              -var="location=${{ github.event.inputs.azure_location }}" \
-              -var="resource_group_name=${{ github.event.inputs.azure_resource_group }}" \
-              -var="storage_account_name=${{ github.event.inputs.azure_storage_account }}" \
-              -var="service_principal_name=${{ github.event.inputs.azure_service_principal_name }}" \
-              -out=tfplan
+            terraform plan -destroy -out=tfplan
           fi
 
       - name: Terraform Apply
-        run: terraform apply -auto-approve tfplan
+        run: |
+          if terraform apply -auto-approve tfplan 2>&1 | tee apply.log; [[ ${PIPESTATUS[0]} -eq 0 ]]; then
+            exit 0
+          fi
+          if grep -q "Authorization_RequestDenied" apply.log; then
+            echo "::error::The admin service principal (azure_admin_client_id) may not create Entra ID applications. Either give it the 'Application Administrator' role (Entra ID > Roles and administrators) or the Microsoft Graph application permission 'Application.ReadWrite.All' with admin consent, or run azure-service-principal/bootstrap-azure.sh locally as a user who can register apps."
+          fi
+          exit 1
 
       - name: Display Created Credentials (Apply Only)
         if: ${{ github.event.inputs.action == 'apply' }}
@@ -210,4 +257,4 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: rm -f tfplan
+        run: rm -f tfplan apply.log

@@ -426,34 +426,76 @@ jobs:
         if: ${{ github.event.inputs.provider == 'digitalocean' }}
         env:
           TF_VAR_digitalocean_token: ${{ github.event.inputs.do_token }}
+          DO_TOKEN: ${{ github.event.inputs.do_token }}
+          AWS_ACCESS_KEY_ID: ${{ github.event.inputs.do_access_key }}
+          AWS_SECRET_ACCESS_KEY: ${{ github.event.inputs.do_secret_key }}
+          BUCKET_PREFIX: terraform-crack-detection
+          SPACES_REGIONS: "nyc3 sfo3 sfo2 ams3 fra1 sgp1 syd1 blr1 lon1 tor1 atl1"
         run: |
           CLUSTER_NAME="${{ github.event.inputs.cluster_name }}"
           if [ -z "$CLUSTER_NAME" ]; then
             CLUSTER_NAME="crack-detection-cluster"
           fi
+
+          # Spaces bucket names are unique per region, so a fixed name such as
+          # 'terraform-crack-detection' may already belong to another account. Find the
+          # state bucket among the buckets this key can see ('<prefix>' or '<prefix>-*'),
+          # in whichever region it lives, instead of assuming a fixed name in nyc3.
+          list_buckets() {
+            aws s3api list-buckets --region us-east-1 --endpoint-url "https://$1.digitaloceanspaces.com" \
+              --query 'Buckets[].Name' --output text 2>/dev/null | tr '\t' '\n' | grep -v '^None$' || true
+          }
+          BUCKET="" BUCKET_REGION=""
+          echo "::group::Buckets visible to the Spaces key"
+          for R in $SPACES_REGIONS; do
+            NAMES=$(list_buckets "$R")
+            echo "  $R: $(echo $NAMES)"
+            [[ -n "$BUCKET" ]] && continue
+            # Prefer the exact prefix name, then the first '<prefix>-*' bucket.
+            MATCH=$(echo "$NAMES" | grep -x "$BUCKET_PREFIX" || echo "$NAMES" | grep -E "^${BUCKET_PREFIX}-" | sort | head -n 1 || true)
+            if [[ -n "$MATCH" ]]; then
+              BUCKET="$MATCH" BUCKET_REGION="$R"
+            fi
+          done
+          echo "::endgroup::"
+
+          if [[ -z "$BUCKET" ]]; then
+            # None yet: create one whose name is unique to this DO account
+            # (suffix derived from the account UUID, so reruns pick the same name).
+            BUCKET_REGION="${{ github.event.inputs.do_cluster_region }}"
+            BUCKET_REGION="${BUCKET_REGION:-sfo3}"
+            [[ " $SPACES_REGIONS " == *" $BUCKET_REGION "* ]] || BUCKET_REGION="nyc3"
+            ACCOUNT_UUID=$(curl -sf -H "Authorization: Bearer $DO_TOKEN" https://api.digitalocean.com/v2/account | jq -r '.account.uuid // empty' || true)
+            SUFFIX=$(printf '%s' "${ACCOUNT_UUID:-$AWS_ACCESS_KEY_ID}" | sha256sum | cut -c1-8)
+            BUCKET="${BUCKET_PREFIX}-${SUFFIX}"
+            echo "No '$BUCKET_PREFIX*' bucket visible to the key - creating '$BUCKET' in $BUCKET_REGION..."
+            if ! ERR=$(aws s3api create-bucket --bucket "$BUCKET" --region us-east-1 \
+                 --endpoint-url "https://$BUCKET_REGION.digitaloceanspaces.com" 2>&1); then
+              echo "::error::Could not create Spaces bucket '$BUCKET' in $BUCKET_REGION: $ERR"
+              echo "::error::Create a bucket named '$BUCKET_PREFIX-<something-unique>' in the DO console (or use a full-access Spaces key) and rerun."
+              exit 1
+            fi
+          fi
+          echo "Terraform state bucket: $BUCKET ($BUCKET_REGION)"
+
+          cat > backend.hcl <<HCL
+          bucket    = "$BUCKET"
+          key       = "DO-cluster/${CLUSTER_NAME}.tfstate"
+          endpoints = { s3 = "https://${BUCKET_REGION}.digitaloceanspaces.com" }
+          HCL
+
           echo "Initializing Terraform DO backend with key=DO-cluster/${CLUSTER_NAME}.tfstate"
           for attempt in 1 2 3; do
             echo "Terraform init attempt $attempt of 3..."
-            if terraform init -input=false \
-              -backend-config="access_key=${{ github.event.inputs.do_access_key }}" \
-              -backend-config="secret_key=${{ github.event.inputs.do_secret_key }}" \
-              -backend-config="key=DO-cluster/${CLUSTER_NAME}.tfstate" 2>&1 | tee init.log; [[ ${PIPESTATUS[0]} -eq 0 ]]; then
+            if terraform init -input=false -reconfigure \
+              -backend-config=backend.hcl \
+              -backend-config="access_key=$AWS_ACCESS_KEY_ID" \
+              -backend-config="secret_key=$AWS_SECRET_ACCESS_KEY" 2>&1 | tee init.log; [[ ${PIPESTATUS[0]} -eq 0 ]]; then
               break
             fi
             # Auth/permission errors won't fix themselves, so don't retry them.
             if grep -qE "AccessDenied|InvalidAccessKeyId|SignatureDoesNotMatch|StatusCode: 403" init.log; then
-              echo "::error::Spaces rejected the do_access_key/do_secret_key for bucket 'terraform-crack-detection' (nyc3). Check that the key pair is current, belongs to the same DO account/team that owns the bucket, and (if it is a limited-access key) has read/write on that bucket."
-              echo "::group::Spaces key diagnostics"
-              AK="${{ github.event.inputs.do_access_key }}"
-              echo "Access key: ${AK:0:6}... (length ${#AK}, expected 20)"
-              for R in nyc3 sfo3 ams3 fra1 sgp1 syd1 blr1 lon1 tor1 atl1; do
-                BUCKETS=$(AWS_ACCESS_KEY_ID="$AK" AWS_SECRET_ACCESS_KEY="${{ github.event.inputs.do_secret_key }}" \
-                  aws s3api list-buckets --region us-east-1 --endpoint-url "https://$R.digitaloceanspaces.com" \
-                  --query 'Buckets[].Name' --output text 2>&1) || BUCKETS="(error: $(echo "$BUCKETS" | tail -1))"
-                echo "  $R: ${BUCKETS:-(none)}"
-              done
-              echo "If 'terraform-crack-detection' is not listed under nyc3, the key belongs to a different account/team, is a limited-access key without this bucket, or your bucket is in another region (nyc3's name is then owned by someone else)."
-              echo "::endgroup::"
+              echo "::error::Spaces rejected the do_access_key/do_secret_key for bucket '$BUCKET' ($BUCKET_REGION). If it is a limited-access key, give it read/write on that bucket."
               exit 1
             fi
             if [[ $attempt -lt 3 ]]; then
@@ -478,6 +520,18 @@ jobs:
           LOCATION="${{ github.event.inputs.azure_location }}"
           if [ -z "$LOCATION" ]; then
             LOCATION="eastus"
+          fi
+
+          # A disabled subscription is read-only: the state storage keys can't even be listed
+          # (409 ReadOnlyDisabledSubscription), so fail here with the reason instead of in init.
+          SUB=$(az account show --query "{id:id, name:name, state:state}" -o json)
+          SUB_ID=$(echo "$SUB" | jq -r '.id')
+          SUB_STATE=$(echo "$SUB" | jq -r '.state')
+          echo "Azure subscription: $(echo "$SUB" | jq -r '.name') ($SUB_ID), state: $SUB_STATE"
+          # 'Warned' (billing issue) can already be read-only too, so only 'Enabled' is allowed.
+          if [ "$SUB_STATE" != "Enabled" ]; then
+            echo "::error::Azure subscription '$SUB_ID' is '$SUB_STATE', so it is read-only and nothing can be created or changed. This is usually an expired free trial/credit, a spending limit, or a billing problem. Re-enable it in the Azure portal (Subscriptions -> $SUB_ID -> Reactivate / remove spending limit, or upgrade to Pay-As-You-Go), or rerun with AZURE_CREDENTIALS for an active subscription."
+            exit 1
           fi
 
           # Discover or configure the storage account resource group
@@ -514,17 +568,26 @@ jobs:
             --account-name "$STORAGE_ACCOUNT" \
             --auth-mode login 2>/dev/null || true
 
+          # The next step must never let Terraform manage (and so possibly destroy) this group.
+          echo "TFSTATE_RG=$SA_RG" >> "$GITHUB_ENV"
+
           echo "Initializing Terraform Azure backend:"
           echo "  resource_group_name  = $SA_RG"
           echo "  storage_account_name = $STORAGE_ACCOUNT"
           echo "  container_name       = $CONTAINER"
           echo "  key                  = aks/${CLUSTER_NAME}.tfstate"
 
-          terraform init -input=false \
+          if terraform init -input=false \
             -backend-config="resource_group_name=$SA_RG" \
             -backend-config="storage_account_name=$STORAGE_ACCOUNT" \
             -backend-config="container_name=$CONTAINER" \
-            -backend-config="key=aks/${CLUSTER_NAME}.tfstate"
+            -backend-config="key=aks/${CLUSTER_NAME}.tfstate" 2>&1 | tee init.log; [[ ${PIPESTATUS[0]} -ne 0 ]]; then
+            # The state can lag behind billing, so the subscription may report 'Enabled' yet be read-only.
+            if grep -q "ReadOnlyDisabledSubscription" init.log; then
+              echo "::error::Azure subscription '$SUB_ID' is disabled/read-only (reported state: '$SUB_STATE'). Resolve the billing issue and re-enable it in the Azure portal (Subscriptions -> $SUB_ID -> Reactivate / remove spending limit, or upgrade to Pay-As-You-Go), or rerun with AZURE_CREDENTIALS for an active subscription."
+            fi
+            exit 1
+          fi
         working-directory: ${{ steps.setdir.outputs.dir }}
 
       - name: Terraform Init (AWS)
@@ -582,6 +645,43 @@ jobs:
             -backend-config="key=eks/${CLUSTER_NAME}.tfstate"
         working-directory: ${{ steps.setdir.outputs.dir }}
 
+      # ==== Azure: decide whether Terraform creates the AKS resource group or reuses one ====
+      # Creating a group that already exists fails with "a resource with the ID ... already
+      # exists". So: keep managing a group Terraform created earlier (it is in state); reuse an
+      # existing group as read-only data (destroy then leaves it alone); create it otherwise.
+      # The Terraform state resource group is never managed, so destroy can't wipe the state.
+      - name: Resolve AKS resource group (Azure)
+        if: ${{ github.event.inputs.provider == 'azure' }}
+        run: |
+          CLUSTER_NAME="${{ github.event.inputs.cluster_name }}"
+          CLUSTER_NAME="${CLUSTER_NAME:-crack-detection-cluster}"
+          RG="${{ github.event.inputs.azure_resource_group }}"
+          RG="${RG:-${CLUSTER_NAME}-rg}"
+
+          IN_STATE=""
+          terraform state list 2>/dev/null | grep -qx 'azurerm_resource_group.cluster\[0\]' && IN_STATE=1
+          if [[ "$RG" == "$TFSTATE_RG" ]]; then
+            echo "::warning::'$RG' holds the Terraform state storage account. The cluster is placed in it as an existing group, but Terraform will not manage or delete it. Leave azure_resource_group blank to give the cluster its own '${CLUSTER_NAME}-rg'."
+            if [[ -n "$IN_STATE" ]]; then
+              echo "Removing '$RG' from Terraform state so destroy cannot delete it (the group itself is untouched)."
+              terraform state rm 'azurerm_resource_group.cluster[0]'
+              IN_STATE=""
+            fi
+            CREATE=false
+          elif [[ -n "$IN_STATE" ]]; then
+            echo "Resource group '$RG' is managed by Terraform (in state)."
+            CREATE=true
+          elif [[ "$(az group exists --name "$RG")" == "true" ]]; then
+            echo "Resource group '$RG' already exists - using it as is (Terraform will not create or delete it)."
+            CREATE=false
+          else
+            echo "Resource group '$RG' does not exist - Terraform will create it."
+            CREATE=true
+          fi
+          echo "TF_VAR_resource_group_name=$RG" >> "$GITHUB_ENV"
+          echo "TF_VAR_create_resource_group=$CREATE" >> "$GITHUB_ENV"
+        working-directory: ${{ steps.setdir.outputs.dir }}
+
       # ==== Terraform Plan / Apply / Destroy ====
       - name: Terraform Validate
         run: terraform validate
@@ -601,9 +701,6 @@ jobs:
           elif [[ "${{ github.event.inputs.provider }}" == "azure" ]]; then
             export TF_VAR_cluster_name="${{ github.event.inputs.cluster_name }}"
             export TF_VAR_location="${{ github.event.inputs.azure_location }}"
-            if [ -n "${{ github.event.inputs.azure_resource_group }}" ]; then
-              export TF_VAR_resource_group_name="${{ github.event.inputs.azure_resource_group }}"
-            fi
           elif [[ "${{ github.event.inputs.provider }}" == "aws" ]]; then
             export TF_VAR_cluster_name="${{ github.event.inputs.cluster_name }}"
             export TF_VAR_region="${{ github.event.inputs.aws_region }}"
@@ -655,9 +752,6 @@ jobs:
           elif [[ "${{ github.event.inputs.provider }}" == "azure" ]]; then
             export TF_VAR_cluster_name="${{ github.event.inputs.cluster_name }}"
             export TF_VAR_location="${{ github.event.inputs.azure_location }}"
-            if [ -n "${{ github.event.inputs.azure_resource_group }}" ]; then
-              export TF_VAR_resource_group_name="${{ github.event.inputs.azure_resource_group }}"
-            fi
           elif [[ "${{ github.event.inputs.provider }}" == "aws" ]]; then
             export TF_VAR_cluster_name="${{ github.event.inputs.cluster_name }}"
             export TF_VAR_region="${{ github.event.inputs.aws_region }}"
@@ -776,10 +870,7 @@ jobs:
         if: ${{ github.event.inputs.action == 'destroy' && github.event.inputs.provider == 'azure' }}
         run: |
           CLUSTER_NAME="${{ github.event.inputs.cluster_name }}"
-          RG="${{ github.event.inputs.azure_resource_group }}"
-          if [ -z "$RG" ]; then
-            RG="${CLUSTER_NAME}-rg"
-          fi
+          RG="$TF_VAR_resource_group_name"
 
           echo "Connecting to AKS cluster $CLUSTER_NAME in $RG..."
           az aks get-credentials --resource-group "$RG" --name "$CLUSTER_NAME" --overwrite-existing || true
@@ -811,6 +902,61 @@ jobs:
           echo "⏳ Waiting 60s for AWS Load Balancers and EBS volumes to be cleanly released (otherwise VPC deletion fails)..."
           sleep 60
 
+          # The kubectl cleanup above is best effort (cluster unreachable, controller slow, earlier
+          # partial destroy). Load balancers, their ENIs/public IPs and k8s-* security groups are not
+          # in Terraform state and block subnet/IGW deletion with DependencyViolation, so remove
+          # whatever is still left in the cluster VPC directly via the AWS API.
+          CLUSTER_NAME="${CLUSTER_NAME:-crack-detection-cluster}"
+          export AWS_DEFAULT_REGION="$REGION"
+          VPC_ID=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=${CLUSTER_NAME}-vpc" \
+            --query 'Vpcs[0].VpcId' --output text 2>/dev/null || true)
+          if [[ -z "$VPC_ID" || "$VPC_ID" == "None" ]]; then
+            echo "VPC '${CLUSTER_NAME}-vpc' not found - nothing left to clean up."
+            exit 0
+          fi
+          echo "Cleaning up Kubernetes-created resources in $VPC_ID..."
+
+          for ARN in $(aws elbv2 describe-load-balancers --query "LoadBalancers[?VpcId=='$VPC_ID'].LoadBalancerArn" --output text); do
+            echo "Deleting load balancer $ARN"
+            aws elbv2 delete-load-balancer --load-balancer-arn "$ARN" || true
+          done
+          for NAME in $(aws elb describe-load-balancers --query "LoadBalancerDescriptions[?VPCId=='$VPC_ID'].LoadBalancerName" --output text); do
+            echo "Deleting classic load balancer $NAME"
+            aws elb delete-load-balancer --load-balancer-name "$NAME" || true
+          done
+          for TG in $(aws elbv2 describe-target-groups --query "TargetGroups[?VpcId=='$VPC_ID'].TargetGroupArn" --output text); do
+            aws elbv2 delete-target-group --target-group-arn "$TG" || true
+          done
+
+          # Load balancer ENIs (and their public IPs) disappear asynchronously.
+          for i in $(seq 1 30); do
+            LB_ENIS=$(aws ec2 describe-network-interfaces --filters "Name=vpc-id,Values=$VPC_ID" \
+              --query "NetworkInterfaces[?starts_with(Description, 'ELB ')].NetworkInterfaceId" --output text || true)
+            [[ -z "$LB_ENIS" ]] && break
+            echo "Waiting for load balancer network interfaces to be released ($i/30): $LB_ENIS"
+            sleep 10
+          done
+
+          for ENI in $(aws ec2 describe-network-interfaces --filters "Name=vpc-id,Values=$VPC_ID" "Name=status,Values=available" \
+              --query 'NetworkInterfaces[].NetworkInterfaceId' --output text); do
+            echo "Deleting detached network interface $ENI"
+            aws ec2 delete-network-interface --network-interface-id "$ENI" || true
+          done
+
+          # Security groups created by Kubernetes for load balancers (k8s-elb-*, k8s-*): first drop rules
+          # in other groups that reference them, then delete them.
+          ALL_SGS=$(aws ec2 describe-security-groups --filters "Name=vpc-id,Values=$VPC_ID" --query 'SecurityGroups[].GroupId' --output text || true)
+          for SG in $(aws ec2 describe-security-groups --filters "Name=vpc-id,Values=$VPC_ID" \
+              --query "SecurityGroups[?starts_with(GroupName, 'k8s-')].GroupId" --output text); do
+            for OTHER in $ALL_SGS; do
+              RULES=$(aws ec2 describe-security-group-rules --filters "Name=group-id,Values=$OTHER" \
+                --query "SecurityGroupRules[?ReferencedGroupInfo.GroupId=='$SG' && !IsEgress].SecurityGroupRuleId" --output text || true)
+              [[ -n "$RULES" ]] && aws ec2 revoke-security-group-ingress --group-id "$OTHER" --security-group-rule-ids $RULES >/dev/null || true
+            done
+            echo "Deleting Kubernetes security group $SG"
+            aws ec2 delete-security-group --group-id "$SG" || true
+          done
+
       # ==== Run Terraform destroy (plan was already created above) ====
       - name: Terraform Destroy
         if: ${{ github.event.inputs.action == 'destroy' }}
@@ -827,9 +973,6 @@ jobs:
           elif [[ "${{ github.event.inputs.provider }}" == "azure" ]]; then
             export TF_VAR_cluster_name="${{ github.event.inputs.cluster_name }}"
             export TF_VAR_location="${{ github.event.inputs.azure_location }}"
-            if [ -n "${{ github.event.inputs.azure_resource_group }}" ]; then
-              export TF_VAR_resource_group_name="${{ github.event.inputs.azure_resource_group }}"
-            fi
           elif [[ "${{ github.event.inputs.provider }}" == "aws" ]]; then
             export TF_VAR_cluster_name="${{ github.event.inputs.cluster_name }}"
             export TF_VAR_region="${{ github.event.inputs.aws_region }}"
