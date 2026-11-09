@@ -20,8 +20,8 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   retries: 0,
-  // The GCP Console is slow; role assignment in particular can take a while.
-  timeout: 5 * 60_000,
+  // The GCP Console is slow (the IAM page alone can spin for minutes), so allow 15 min per test.
+  timeout: 15 * 60_000,
   expect: { timeout: 30_000 },
   reporter: [['list'], ['html', { open: 'never' }]],
 

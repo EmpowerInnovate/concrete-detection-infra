@@ -192,16 +192,15 @@ export class GcpConsole {
 
   /** Type into the list's filter box so pagination can't hide the row. Best effort. */
   private async filterList(text: string): Promise<void> {
-    const filter = this.page
-      .getByPlaceholder(/filter/i)
-      .or(this.page.getByRole('textbox', { name: /filter/i }))
-      .or(this.page.getByRole('combobox', { name: /filter/i }))
-      .first();
-    if (await filter.isVisible({ timeout: 5_000 }).catch(() => false)) {
+    await this.waitForTableOrFilter(120_000).catch(() => {});
+    const filter = this.filterBox;
+    if (await filter.isVisible({ timeout: 10_000 }).catch(() => false)) {
+      await filter.click();
       await filter.fill(text);
       await filter.press('Enter');
     }
   }
+
 
   /** Open the service account details page and switch to the Keys tab. */
   async openKeysTab(email: string): Promise<void> {
@@ -273,16 +272,34 @@ export class GcpConsole {
 
   // ---------------------------------------------------------------- IAM page
 
-  /** IAM page row for a principal, filtered so pagination doesn't hide it. */
+  /**
+   * IAM page row for a principal. The IAM page is slow (it can show a spinner for a minute or
+   * more), so wait for it to finish, then filter by the email so pagination can't hide the row.
+   */
   async iamRowFor(email: string): Promise<Locator> {
     await this.goto(urls.iam());
-    const filter = this.page.getByPlaceholder(/filter/i).first();
-    await filter.fill(email);
-    await filter.press('Enter');
-    const row = this.tableRows.filter({ hasText: email });
-    await expect(row.first()).toBeVisible();
-    return row.first();
+    await this.waitForTableOrFilter(180_000);
+    await this.filterList(email);
+    const row = this.tableRows.filter({ hasText: email }).first();
+    await expect(row, `${email} not found on the IAM page`).toBeVisible({ timeout: 90_000 });
+    return row;
   }
+
+  /** The filter box above Console tables; its placeholder/label differs between pages. */
+  get filterBox(): Locator {
+    return this.page
+      .getByPlaceholder(/filter|property name or value/i)
+      .or(this.page.getByRole('textbox', { name: /filter/i }))
+      .or(this.page.getByRole('combobox', { name: /filter/i }))
+      .or(this.page.locator('input[aria-label*="filter" i], input[placeholder*="filter" i]'))
+      .first();
+  }
+
+  /** Wait until the page has finished loading: a filter box or a table row is shown. */
+  async waitForTableOrFilter(timeout: number): Promise<void> {
+    await expect(this.filterBox.or(this.tableRows.first()).first(), 'page did not finish loading').toBeVisible({ timeout });
+  }
+
 
   // ---------------------------------------------------------------- cleanup (UI fallback)
 
