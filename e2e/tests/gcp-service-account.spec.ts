@@ -35,7 +35,15 @@ test.describe('Create service account form validation', () => {
     await expect(
       page.getByText(/lowercase|alphanumeric|must (start|begin|be)|between 6 and 30|invalid/i).first(),
     ).toBeVisible();
-    await expect(gcp.createAndContinueButton).toBeDisabled();
+
+    // Some Console versions disable the button; others leave it enabled and refuse on click.
+    // Either way the wizard must not move on to step 2 (Permissions).
+    if (await gcp.createAndContinueButton.isEnabled()) {
+      await gcp.createAndContinueButton.click();
+      await page.waitForTimeout(3_000);
+    }
+    await expect(gcp.rolePickers, 'the wizard must not continue with an invalid ID').toHaveCount(0);
+    await expect(gcp.idInput).toHaveValue('Bad_ID');
   });
 });
 
@@ -96,7 +104,7 @@ test.describe(`GCP service account "${cfg.saId}" in project "${cfg.projectId}"`,
 
     await test.step('Service account is listed and enabled', async () => {
       await gcp.serviceAccountListed(cfg.saEmail); // opens the list, filtered to this account
-      const row = gcp.serviceAccountRow(cfg.saEmail);
+      const row = gcp.serviceAccountRow(cfg.saEmail).first();
       await expect(row).toBeVisible();
       await expect(row).toContainText(/enabled/i);
       if (!exists) await expect(row).toContainText(cfg.saDisplayName);

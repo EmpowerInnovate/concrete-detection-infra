@@ -168,9 +168,17 @@ export class GcpConsole {
     await expect(this.page.getByRole('button', { name: /create service account/i }).first()).toBeVisible();
   }
 
+  /**
+   * Table rows only. The Console's filter chips (mat-chip-row) also have role="row" and contain
+   * the filtered text, so `getByRole('row')` would match them too.
+   */
+  get tableRows(): Locator {
+    return this.page.locator('tr, [role="row"]:not(mat-chip-row):not(.mat-mdc-chip)');
+  }
+
   /** The row for `email` in the service account list. */
   serviceAccountRow(email: string): Locator {
-    return this.page.getByRole('row').filter({ hasText: email });
+    return this.tableRows.filter({ hasText: email });
   }
 
   /** True if the service account is in the list (opens the list page). */
@@ -178,7 +186,7 @@ export class GcpConsole {
     await this.openServiceAccountList();
     await this.filterList(email);
     // The table loads after the page; give it a moment before deciding the row isn't there.
-    await this.page.getByRole('row').nth(1).waitFor({ timeout: 30_000 }).catch(() => {});
+    await this.tableRows.nth(1).waitFor({ timeout: 30_000 }).catch(() => {});
     return this.serviceAccountRow(email).first().isVisible({ timeout: 5_000 }).catch(() => false);
   }
 
@@ -260,7 +268,7 @@ export class GcpConsole {
 
   /** Row in the Keys table for a key ID. */
   keyRow(keyId: string): Locator {
-    return this.page.getByRole('row').filter({ hasText: keyId });
+    return this.tableRows.filter({ hasText: keyId });
   }
 
   // ---------------------------------------------------------------- IAM page
@@ -271,7 +279,7 @@ export class GcpConsole {
     const filter = this.page.getByPlaceholder(/filter/i).first();
     await filter.fill(email);
     await filter.press('Enter');
-    const row = this.page.getByRole('row').filter({ hasText: email });
+    const row = this.tableRows.filter({ hasText: email });
     await expect(row.first()).toBeVisible();
     return row.first();
   }
