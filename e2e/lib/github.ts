@@ -71,64 +71,112 @@ export class GitHubActions {
     }
   }
 
+  /** Workflow page each started run belongs to; its run list shows the run's status. */
+  private workflowPageOf = new Map<string, string>();
+
   /** Opens the workflow, fills "Run workflow" with `inputs`, starts it and returns the run URL. */
   async startWorkflow(workflowFile: string, inputs: Record<string, string>, secretInputs: string[] = []): Promise<string> {
-    // Checks names and choice values against the YAML before touching GitHub.
+    // Checks names and choice values against the YAML (which also proves it has workflow_dispatch)
+    // before touching GitHub.
     const defs = checkInputs(workflowFile, inputs);
+    const workflowUrl = `${this.repoUrl}/actions/workflows/${workflowFile}`;
 
-    await this.goto(`${this.repoUrl}/actions/workflows/${workflowFile}`);
+    await this.goto(workflowUrl);
     if (/not found/i.test(await this.page.title())) {
       throw new Error(`${this.repoUrl} not found - the signed-in GitHub account has no access to it, or GITHUB_REPO is wrong.`);
     }
-    await expect(this.page.getByText(/workflow_dispatch/).first(), `${workflowFile} cannot be run by hand`).toBeVisible();
-
-    const before = await this.runIds();
 
     const runButton = this.page.getByRole('button', { name: 'Run workflow', exact: true }).first();
-    await expect(runButton, 'No "Run workflow" button: the signed-in account needs write access to the repo').toBeVisible();
+    await expect(runButton, 'No "Run workflow" button: the signed-in account needs write access to the repo').toBeVisible({
+      timeout: 60_000,
+    });
+    // Let the run list load so existing runs aren't mistaken for the new one.
+    await this.page.locator('a[href*="/actions/runs/"]').first().waitFor({ timeout: 15_000 }).catch(() => {});
+    const before = await this.runIds();
+
     await runButton.click();
+    const runButtonInPanel = this.page.getByRole('button', { name: 'Run workflow', exact: true });
     const panel = this.page
       .locator('form[action*="/actions/manual"]')
-      .or(this.page.getByRole('dialog').filter({ hasText: /Use workflow from/ }))
+      .or(this.page.getByRole('dialog').filter({ hasText: /Use workflow from|Branch:/i }))
+      .or(this.page.getByRole('dialog').filter({ has: runButtonInPanel }))
       .last();
-    await expect(panel).toBeVisible();
+    await expect(panel, 'The "Run workflow" form did not open').toBeVisible({ timeout: 30_000 });
 
     for (const [input, value] of Object.entries(inputs)) {
       await this.setField(panel, input, defs[input], value);
       console.log(`  ${input} = ${secretInputs.includes(input) ? `(hidden, ${value.length} characters)` : value}`);
     }
 
-    await panel.getByRole('button', { name: 'Run workflow', exact: true }).click();
+    await panel.getByRole('button', { name: 'Run workflow', exact: true }).last().click();
 
     // The new run appears in the list after a few seconds.
     let runId = '';
     await expect(async () => {
-      await this.page.reload({ waitUntil: 'domcontentloaded' });
+      await this.page.goto(workflowUrl, { waitUntil: 'domcontentloaded' });
+      await this.page.locator('a[href*="/actions/runs/"]').first().waitFor({ timeout: 10_000 }).catch(() => {});
       runId = [...(await this.runIds())].find((id) => !before.has(id)) ?? '';
       expect(runId, 'new workflow run').not.toBe('');
-    }).toPass({ timeout: 120_000, intervals: [5_000] });
+    }).toPass({ timeout: 180_000, intervals: [5_000] });
 
-    return `${this.repoUrl}/actions/runs/${runId}`;
+    const runUrl = `${this.repoUrl}/actions/runs/${runId}`;
+    this.workflowPageOf.set(runUrl, workflowUrl);
+    return runUrl;
   }
 
-  /** Reloads the run page every 30 s until it finishes; returns Success / Failure / Cancelled ... */
-  async waitForRun(runUrl: string, timeoutMs: number): Promise<string> {
+  /**
+   * Status of a run from the workflow's run list. Each run is a list item labelled e.g.
+   * "completed successfully: Run 40 of ...", "failed: Run 41 of ...", "in progress: ...".
+   */
+  private async statusFromRunList(runId: string): Promise<string> {
+    const item = this.page.getByRole('listitem').filter({ has: this.page.locator(`a[href*="/actions/runs/${runId}"]`) }).first();
+    if (!(await item.isVisible({ timeout: 10_000 }).catch(() => false))) return '';
+    const label = ((await item.getAttribute('aria-label')) || (await item.innerText().catch(() => ''))).toLowerCase();
+    if (/completed successfully|^success/.test(label)) return 'Success';
+    if (/startup failure/.test(label)) return 'Startup failure';
+    if (/timed out/.test(label)) return 'Timed out';
+    if (/cancel/.test(label)) return 'Cancelled';
+    if (/skipped/.test(label)) return 'Skipped';
+    if (/fail/.test(label)) return 'Failure';
+    if (/in progress|running/.test(label)) return 'In progress';
+    if (/queued/.test(label)) return 'Queued';
+    if (/waiting|pending|requested/.test(label)) return 'Waiting';
+    return '';
+  }
+
+  /** Status from the run page text ("Status  Success"); fallback for older GitHub layouts. */
+  private async statusFromRunPage(runUrl: string): Promise<string> {
     const states = ['Success', 'Failure', 'Cancelled', 'Skipped', 'Timed out', 'Startup failure', 'In progress', 'Queued', 'Waiting', 'Pending', 'Requested'];
-    const finished = /^(Success|Failure|Cancelled|Skipped|Timed out|Startup failure)$/i;
     const statusRe = new RegExp(`Status\\s*\\n?\\s*(${states.map(escapeRe).join('|')})`, 'i');
+    await this.page.goto(runUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
+    const text = await this.page.locator('body').innerText().catch(() => '');
+    return text.match(statusRe)?.[1] ?? '';
+  }
+
+  /** Checks every 30 s until the run finishes; returns Success / Failure / Cancelled ... */
+  async waitForRun(runUrl: string, timeoutMs: number): Promise<string> {
+    const finished = /^(Success|Failure|Cancelled|Skipped|Timed out|Startup failure)$/i;
+    const runId = runUrl.match(/\/runs\/(\d+)/)?.[1] ?? '';
+    const workflowUrl = this.workflowPageOf.get(runUrl);
     const deadline = Date.now() + timeoutMs;
     let last = '';
-    await this.goto(runUrl);
+    console.log(`  Following ${runUrl} (checks every 30 s)`);
     while (Date.now() < deadline) {
-      const text = await this.page.locator('body').innerText().catch(() => '');
-      const status = text.match(statusRe)?.[1] ?? '';
+      let status = '';
+      if (workflowUrl) {
+        await this.goto(workflowUrl);
+        status = await this.statusFromRunList(runId);
+      }
+      if (!status) status = await this.statusFromRunPage(runUrl);
       if (status && status !== last) {
         console.log(`  ${new Date().toLocaleTimeString()}  run status: ${status}`);
         last = status;
       }
-      if (finished.test(status)) return status;
+      if (finished.test(status)) {
+        await this.page.goto(runUrl, { waitUntil: 'domcontentloaded' }).catch(() => {}); // leave the run open for the report
+        return status;
+      }
       await this.page.waitForTimeout(30_000);
-      await this.page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
     }
     throw new Error(`Run did not finish within ${Math.round(timeoutMs / 60_000)} min (last status: ${last || 'unknown'}): ${runUrl}`);
   }
