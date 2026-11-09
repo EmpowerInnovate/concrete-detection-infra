@@ -164,7 +164,7 @@ export class GcpConsole {
   async finishWizard(): Promise<void> {
     await this.page.getByRole('button', { name: 'Continue', exact: true }).click();
     await this.page.getByRole('button', { name: 'Done', exact: true }).click();
-    await this.page.waitForURL(/\/iam-admin\/serviceaccounts(\?|$)/, { timeout: PAGE_LOAD });
+    await this.page.waitForURL(/\/iam-admin\/serviceaccounts(\?|$)/, { timeout: PAGE_LOAD, waitUntil: 'commit' });
   }
 
   // ---------------------------------------------------------------- list / details
@@ -220,7 +220,7 @@ export class GcpConsole {
     const link = this.page.getByRole('link', { name: email, exact: true }).first();
     await expect(link, `${email} not found in the service account list`).toBeVisible({ timeout: PAGE_LOAD });
     await link.click();
-    await this.page.waitForURL(/\/iam-admin\/serviceaccounts\/details\//, { timeout: PAGE_LOAD });
+    await this.page.waitForURL(/\/iam-admin\/serviceaccounts\/details\//, { timeout: PAGE_LOAD, waitUntil: 'commit' });
     const keysTab = this.page.getByRole('tab', { name: 'Keys', exact: true });
     await expect(keysTab).toBeVisible({ timeout: PAGE_LOAD });
     await keysTab.click();
