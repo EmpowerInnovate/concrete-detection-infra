@@ -2,6 +2,12 @@ import { expect, type Locator, type Page } from '@playwright/test';
 import { urls } from './config';
 import { waitForGoogleSignIn } from './signin';
 
+/**
+ * How long to wait for a Console page to finish loading. The Console often shows only a
+ * spinner for a minute or more, so this is generous. Override with PAGE_LOAD_TIMEOUT_SEC.
+ */
+const PAGE_LOAD = Number(process.env.PAGE_LOAD_TIMEOUT_SEC || 180) * 1_000;
+
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /**
@@ -37,7 +43,7 @@ export class GcpConsole {
   async openCreateServiceAccount(): Promise<void> {
     await this.goto(urls.createServiceAccount());
     // The form renders a while after the page; the name field is the reliable sign it's ready.
-    await expect(this.nameInput).toBeVisible({ timeout: 90_000 });
+    await expect(this.nameInput).toBeVisible({ timeout: PAGE_LOAD });
   }
 
   get nameInput(): Locator {
@@ -158,14 +164,19 @@ export class GcpConsole {
   async finishWizard(): Promise<void> {
     await this.page.getByRole('button', { name: 'Continue', exact: true }).click();
     await this.page.getByRole('button', { name: 'Done', exact: true }).click();
-    await this.page.waitForURL(/\/iam-admin\/serviceaccounts(\?|$)/, { timeout: 90_000 });
+    await this.page.waitForURL(/\/iam-admin\/serviceaccounts(\?|$)/, { timeout: PAGE_LOAD });
   }
 
   // ---------------------------------------------------------------- list / details
 
   async openServiceAccountList(): Promise<void> {
     await this.goto(urls.serviceAccounts());
-    await expect(this.page.getByRole('button', { name: /create service account/i }).first()).toBeVisible();
+    // Ready when the "Create service account" button or the table/filter shows up.
+    await expect(
+      this.page.getByRole('button', { name: /create service account/i }).first()
+        .or(this.filterBox).or(this.tableRows.first()).first(),
+      'service account list did not finish loading',
+    ).toBeVisible({ timeout: PAGE_LOAD });
   }
 
   /**
@@ -186,13 +197,13 @@ export class GcpConsole {
     await this.openServiceAccountList();
     await this.filterList(email);
     // The table loads after the page; give it a moment before deciding the row isn't there.
-    await this.tableRows.nth(1).waitFor({ timeout: 30_000 }).catch(() => {});
+    await this.tableRows.nth(1).waitFor({ timeout: 60_000 }).catch(() => {});
     return this.serviceAccountRow(email).first().isVisible({ timeout: 5_000 }).catch(() => false);
   }
 
   /** Type into the list's filter box so pagination can't hide the row. Best effort. */
   private async filterList(text: string): Promise<void> {
-    await this.waitForTableOrFilter(120_000).catch(() => {});
+    await this.waitForTableOrFilter(PAGE_LOAD).catch(() => {});
     const filter = this.filterBox;
     if (await filter.isVisible({ timeout: 10_000 }).catch(() => false)) {
       await filter.click();
@@ -206,10 +217,14 @@ export class GcpConsole {
   async openKeysTab(email: string): Promise<void> {
     await this.openServiceAccountList();
     await this.filterList(email);
-    await this.page.getByRole('link', { name: email, exact: true }).click();
-    await this.page.waitForURL(/\/iam-admin\/serviceaccounts\/details\//);
-    await this.page.getByRole('tab', { name: 'Keys', exact: true }).click();
-    await expect(this.page.getByRole('button', { name: 'Add key' })).toBeVisible();
+    const link = this.page.getByRole('link', { name: email, exact: true }).first();
+    await expect(link, `${email} not found in the service account list`).toBeVisible({ timeout: PAGE_LOAD });
+    await link.click();
+    await this.page.waitForURL(/\/iam-admin\/serviceaccounts\/details\//, { timeout: PAGE_LOAD });
+    const keysTab = this.page.getByRole('tab', { name: 'Keys', exact: true });
+    await expect(keysTab).toBeVisible({ timeout: PAGE_LOAD });
+    await keysTab.click();
+    await expect(this.page.getByRole('button', { name: 'Add key' })).toBeVisible({ timeout: PAGE_LOAD });
   }
 
   // ---------------------------------------------------------------- keys
@@ -278,10 +293,10 @@ export class GcpConsole {
    */
   async iamRowFor(email: string): Promise<Locator> {
     await this.goto(urls.iam());
-    await this.waitForTableOrFilter(180_000);
+    await this.waitForTableOrFilter(PAGE_LOAD);
     await this.filterList(email);
     const row = this.tableRows.filter({ hasText: email }).first();
-    await expect(row, `${email} not found on the IAM page`).toBeVisible({ timeout: 90_000 });
+    await expect(row, `${email} not found on the IAM page`).toBeVisible({ timeout: PAGE_LOAD });
     return row;
   }
 
