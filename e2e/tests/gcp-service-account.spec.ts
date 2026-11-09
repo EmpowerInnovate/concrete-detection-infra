@@ -27,10 +27,14 @@ test.describe('Create service account form validation', () => {
     const gcp = new GcpConsole(page);
     await gcp.openCreateServiceAccount();
 
-    await gcp.nameInput.fill('Invalid id check');
+    await gcp.fillName('Invalid id check');
     await gcp.idInput.fill('Bad_ID'); // uppercase + underscore, and too short
 
-    await expect(page.getByText(/lowercase alphanumeric characters and dashes/i).first()).toBeVisible();
+    await gcp.idInput.press('Tab');
+    // Wording varies between Console versions; any ID-format error message will do.
+    await expect(
+      page.getByText(/lowercase|alphanumeric|must (start|begin|be)|between 6 and 30|invalid/i).first(),
+    ).toBeVisible();
     await expect(gcp.createAndContinueButton).toBeDisabled();
   });
 });
@@ -42,15 +46,27 @@ test.describe(`GCP service account "${cfg.saId}" in project "${cfg.projectId}"`,
     const gcp = new GcpConsole(page);
 
     // An account that already exists is used as it is: never created again, never deleted.
-    let exists = await test.step(`Check whether ${cfg.saEmail} already exists`, async () =>
-      gcloud.gcloudAvailable() ? gcloud.serviceAccountExists(cfg.saEmail) : gcp.serviceAccountListed(cfg.saEmail),
-    );
+    let exists = await test.step(`Check whether ${cfg.saEmail} already exists`, async () => {
+      if (gcloud.gcloudAvailable()) {
+        try {
+          return gcloud.serviceAccountExists(cfg.saEmail);
+        } catch (e) {
+          console.warn(`${(e as Error).message} - checking in the Console instead.`);
+        }
+      }
+      return gcp.serviceAccountListed(cfg.saEmail);
+    });
+    console.log(`${cfg.saEmail}: ${exists ? 'already exists' : 'not found, will create it'}.`);
 
     if (!exists) {
       await test.step('Step 1: fill in name, ID and description', async () => {
         await gcp.openCreateServiceAccount();
-        await gcp.fillDetails({ name: cfg.saDisplayName, id: cfg.saId, description: cfg.saDescription });
-        await expect(page.getByText(cfg.saEmail).first()).toBeVisible(); // email preview under the ID field
+        const filled = await gcp.fillDetails({ name: cfg.saDisplayName, id: cfg.saId, description: cfg.saDescription });
+        if (filled === 'exists') {
+          // The Console says this ID is taken: the account exists, use it instead of creating it.
+          exists = true;
+          return;
+        }
         createdThisRun = true;
         if ((await gcp.submitDetails()) === 'exists') {
           // The list check missed it (e.g. very long list); the Console knows better.

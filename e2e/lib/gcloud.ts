@@ -11,18 +11,39 @@ function run(args: string[]): string {
 
 let cachedAvailable: boolean | undefined;
 
-/** True when gcloud should be used: installed, authenticated and not disabled via VERIFY_WITH_GCLOUD. */
+function errText(e: unknown): string {
+  const err = e as { stderr?: string; message?: string };
+  return `${err.stderr ?? ''} ${err.message ?? ''}`;
+}
+
+/**
+ * True when gcloud should be used: installed, signed in, and that account can see GCP_PROJECT_ID.
+ * If gcloud is signed in as an account without access to the project, it is not used at all
+ * (otherwise every check would fail and look like "account doesn't exist").
+ */
 export function gcloudAvailable(): boolean {
   if (cfg.verifyWithGcloud === 'false') return false;
   if (cachedAvailable === undefined) {
+    let reason = '';
     try {
-      cachedAvailable = run(['auth', 'list', '--filter=status:ACTIVE', '--format=value(account)']).length > 0;
+      const account = run(['auth', 'list', '--filter=status:ACTIVE', '--format=value(account)']);
+      if (!account) {
+        reason = 'not signed in (gcloud auth login)';
+      } else {
+        try {
+          run(['projects', 'describe', cfg.projectId, '--format=value(projectId)']);
+        } catch (e) {
+          reason = `signed in as ${account}, which cannot access project ${cfg.projectId}`;
+        }
+      }
     } catch {
-      cachedAvailable = false;
+      reason = 'not installed';
     }
-  }
-  if (!cachedAvailable && cfg.verifyWithGcloud === 'true') {
-    throw new Error('VERIFY_WITH_GCLOUD=true but gcloud is not installed or not authenticated (run `gcloud auth login`).');
+    cachedAvailable = !reason;
+    console.log(cachedAvailable ? `gcloud: used for extra checks.` : `gcloud: not used - ${reason}. Checking in the Console UI only.`);
+    if (!cachedAvailable && cfg.verifyWithGcloud === 'true') {
+      throw new Error(`VERIFY_WITH_GCLOUD=true but gcloud is ${reason}.`);
+    }
   }
   return cachedAvailable;
 }
@@ -50,12 +71,14 @@ export function userManagedKeyIds(email: string): string[] {
   return out ? out.split('\n').map((k) => k.trim()).filter(Boolean) : [];
 }
 
+/** True/false from gcloud; throws on any error other than "not found" (e.g. permission denied). */
 export function serviceAccountExists(email: string): boolean {
   try {
     run(['iam', 'service-accounts', 'describe', email, `--project=${cfg.projectId}`, '--format=value(email)']);
     return true;
-  } catch {
-    return false;
+  } catch (e) {
+    if (/NOT_FOUND|does not exist|not found/i.test(errText(e))) return false;
+    throw new Error(`gcloud could not check ${email}: ${errText(e).trim().split('\n')[0]}`);
   }
 }
 

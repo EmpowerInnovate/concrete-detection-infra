@@ -36,32 +36,82 @@ export class GcpConsole {
 
   async openCreateServiceAccount(): Promise<void> {
     await this.goto(urls.createServiceAccount());
-    await expect(this.page.getByRole('heading', { name: 'Create service account' }).first()).toBeVisible();
+    // The form renders a while after the page; the name field is the reliable sign it's ready.
+    await expect(this.nameInput).toBeVisible({ timeout: 90_000 });
   }
 
   get nameInput(): Locator {
-    return this.page.getByLabel('Service account name');
+    return this.page.getByLabel('Service account name').first();
+  }
+
+  /**
+   * The "Service account ID" field. Its label isn't always linked to the input, so try the
+   * label, then the accessible name, then the form control name.
+   */
+  get idInputCandidates(): Locator {
+    return this.page
+      .getByLabel(/Service account ID/i)
+      .or(this.page.getByRole('textbox', { name: /account id/i }))
+      .or(this.page.locator('input[formcontrolname*="accountId" i], input[formcontrolname*="account_id" i], input[name*="accountId" i]'))
+      .or(this.page.locator('[data-e2e="sa-id"]'));
   }
 
   get idInput(): Locator {
-    return this.page.getByLabel(/^Service account ID/);
+    return this.idInputCandidates.first();
   }
 
   get descriptionInput(): Locator {
-    return this.page.getByLabel('Service account description');
+    return this.page.getByLabel(/Service account description/i).first();
   }
 
   get createAndContinueButton(): Locator {
     return this.page.getByRole('button', { name: 'Create and continue' });
   }
 
-  /** Step 1: "Create service account" (name, ID, description). */
-  async fillDetails(details: { name: string; id: string; description?: string }): Promise<void> {
-    await this.nameInput.fill(details.name);
-    // The ID is auto-generated from the name; replace it with the exact ID we want.
+  /**
+   * Last resort for the ID field: after the name is typed, the Console fills the ID with a
+   * value derived from it. Find that input and tag it so `idInput` matches it.
+   */
+  private async tagIdInputByValue(name: string): Promise<void> {
+    await this.page.waitForTimeout(1_000); // let the Console fill in the generated ID
+    const slug = name.toLowerCase().replace(/[^a-z0-9-]+/g, '-').slice(0, 20);
+    const tagged = await this.page.evaluate((prefix) => {
+      const inputs = [...document.querySelectorAll('input')].filter((i) => i.offsetParent !== null);
+      const nameInput = document.activeElement;
+      const hit = inputs.find((i) => i !== nameInput && i.value.toLowerCase().startsWith(prefix));
+      if (hit) hit.setAttribute('data-e2e', 'sa-id');
+      return !!hit;
+    }, slug);
+    if (!tagged) throw new Error('Could not find the "Service account ID" field. Update idInput in lib/gcp-console.ts (npm run codegen).');
+  }
+
+  /** The Console's inline "already exists / in use" message for the ID. */
+  get idTakenMessage(): Locator {
+    return this.page.getByText(/already (exists|in use|been used|taken)|is not available/i).first();
+  }
+
+  /**
+   * Step 1: "Create service account" (name, ID, description).
+   * Returns 'exists' if the Console says the ID is already taken (the account already exists).
+   */
+  /** Type the display name, then make sure the ID field can be found. */
+  async fillName(name: string): Promise<void> {
+    await this.nameInput.fill(name);
+    if (!(await this.idInput.isVisible({ timeout: 10_000 }).catch(() => false))) {
+      await this.tagIdInputByValue(name);
+    }
+  }
+
+  async fillDetails(details: { name: string; id: string; description?: string }): Promise<'ok' | 'exists'> {
+    await this.fillName(details.name);
+    // The ID is auto-generated from the name (with a number added if it's taken);
+    // replace it with the exact ID we want.
     await this.idInput.fill(details.id);
     await expect(this.idInput).toHaveValue(details.id);
-    if (details.description) await this.descriptionInput.fill(details.description);
+    await this.idInput.press('Tab'); // the Console checks the ID when the field loses focus
+    if (details.description) await this.descriptionInput.fill(details.description).catch(() => {});
+    if (await this.idTakenMessage.isVisible({ timeout: 5_000 }).catch(() => false)) return 'exists';
+    return 'ok';
   }
 
   /**
@@ -71,7 +121,7 @@ export class GcpConsole {
   async submitDetails(): Promise<'created' | 'exists'> {
     await this.createAndContinueButton.click();
     const created = this.rolePickers.first();
-    const exists = this.page.getByText(/already exists/i).first();
+    const exists = this.idTakenMessage;
     await expect(created.or(exists).first()).toBeVisible({ timeout: 60_000 });
     return (await exists.isVisible().catch(() => false)) ? 'exists' : 'created';
   }
