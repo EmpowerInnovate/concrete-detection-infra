@@ -1,11 +1,17 @@
 {
   "name": "concrete-detection-infra-e2e",
   "private": true,
-  "description": "Playwright tests for the manual GCP Console steps (service account + key creation)",
+  "description": "Playwright automation for the manual GCP steps (admin service account + roles, JSON key + single-line base64) and the GKE cluster pipeline",
   "scripts": {
     "auth": "FORCE_AUTH=1 playwright test --project=setup",
     "test": "playwright test",
-    "test:headed": "playwright test --headed",
+    "sa": "playwright test --project=gcp-console",
+    "app-sa": "APP_SA=1 playwright test --project=app-sa",
+    "all": "CLUSTER=1 FULL_FLOW=1 CLEANUP=false playwright test",
+    "all:app": "CLUSTER=1 APP_SA=1 FULL_FLOW=1 CLEANUP=false playwright test",
+    "cluster": "CLUSTER=1 playwright test --project=cluster",
+    "cluster:destroy": "CLUSTER=1 CLUSTER_ACTION=destroy playwright test --project=cluster",
+    "test:headless": "HEADLESS=true playwright test",
     "test:debug": "playwright test --debug",
     "codegen": "playwright codegen --channel=chrome --load-storage=.auth/gcp-user.json https://console.cloud.google.com/iam-admin/serviceaccounts",
     "report": "playwright show-report",
@@ -15,6 +21,7 @@
     "@playwright/test": "^1.49.0",
     "@types/node": "^22.10.0",
     "dotenv": "^16.4.5",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "yaml": "^2.9.1"
   }
 }

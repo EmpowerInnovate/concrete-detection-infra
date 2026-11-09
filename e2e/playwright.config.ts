@@ -1,13 +1,18 @@
 import { defineConfig } from '@playwright/test';
 import path from 'node:path';
 import dotenv from 'dotenv';
-import { AUTH_FILE } from './lib/paths';
+import { AUTH_FILE, GITHUB_AUTH_FILE } from './lib/paths';
 
 dotenv.config({ path: path.join(__dirname, '.env') });
 
 // One run ID shared by the main process and every worker, so all tests use the
 // same generated service-account ID.
 process.env.E2E_RUN_ID ??= Date.now().toString(36);
+
+// Headed by default: you watch the browser and sign in when the terminal says ACTION NEEDED.
+const headless = (process.env.HEADLESS ?? 'false').toLowerCase() === 'true';
+const fullFlow = process.env.FULL_FLOW === '1';
+const appSa = process.env.APP_SA === '1';
 
 export default defineConfig({
   testDir: './tests',
@@ -21,6 +26,7 @@ export default defineConfig({
   reporter: [['list'], ['html', { open: 'never' }]],
 
   use: {
+    headless,
     // Google sign-in rejects Playwright's bundled Chromium ("This browser may not be secure"),
     // so use the installed Google Chrome.
     channel: 'chrome',
@@ -41,14 +47,30 @@ export default defineConfig({
     {
       name: 'setup',
       testMatch: /auth\.setup\.ts/,
-      // Signing in to Google is done by hand, so this project always runs headed.
+      // Signing in is done by hand, so this project always runs headed.
       use: { headless: false },
     },
     {
+      // Admin service account + roles, then its JSON key + single-line base64.
       name: 'gcp-console',
-      testMatch: /.*\.spec\.ts/,
+      testMatch: /gcp-service-account\.spec\.ts/,
       dependencies: ['setup'],
       use: { storageState: AUTH_FILE },
+    },
+    {
+      // Optional (APP_SA=1): "Setup GCP Service Account" pipeline, then the app account's key.
+      name: 'app-sa',
+      testMatch: /app-service-account\.spec\.ts/,
+      dependencies: fullFlow ? ['gcp-console'] : ['setup'],
+      use: { storageState: GITHUB_AUTH_FILE },
+    },
+    {
+      // GKE cluster pipeline (CLUSTER=1). In the full flow it waits for the key steps above;
+      // `npm run cluster` reuses the key already in output/.
+      name: 'cluster',
+      testMatch: /gke-cluster-pipeline\.spec\.ts/,
+      dependencies: fullFlow ? [appSa ? 'app-sa' : 'gcp-console'] : ['setup'],
+      use: { storageState: GITHUB_AUTH_FILE },
     },
   ],
 });

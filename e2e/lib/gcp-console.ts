@@ -1,5 +1,8 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 import { urls } from './config';
+import { waitForGoogleSignIn } from './signin';
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /**
  * Page object for the IAM & Admin pages of the Google Cloud Console.
@@ -10,11 +13,11 @@ import { urls } from './config';
 export class GcpConsole {
   constructor(readonly page: Page) {}
 
-  /** Navigate and fail fast with a clear message if the saved Google session has expired. */
+  /** Navigate; if the Google session has expired, wait for you to sign in again, then retry. */
   async goto(url: string): Promise<void> {
     await this.page.goto(url, { waitUntil: 'domcontentloaded' });
-    if (new URL(this.page.url()).hostname === 'accounts.google.com') {
-      throw new Error('Google session expired or missing. Run `npm run auth` in e2e/ and sign in again.');
+    if (await waitForGoogleSignIn(this.page)) {
+      await this.page.goto(url, { waitUntil: 'domcontentloaded' });
     }
     await this.dismissPopups();
   }
@@ -61,10 +64,16 @@ export class GcpConsole {
     if (details.description) await this.descriptionInput.fill(details.description);
   }
 
-  async submitDetails(): Promise<void> {
+  /**
+   * Clicks "Create and continue". Returns 'created' when step 2 ("Permissions") opens, or
+   * 'exists' when the Console says an account with this ID already exists.
+   */
+  async submitDetails(): Promise<'created' | 'exists'> {
     await this.createAndContinueButton.click();
-    // Step 2 ("Permissions (optional)") opens once the account exists.
-    await expect(this.rolePickers.first()).toBeVisible({ timeout: 60_000 });
+    const created = this.rolePickers.first();
+    const exists = this.page.getByText(/already exists/i).first();
+    await expect(created.or(exists).first()).toBeVisible({ timeout: 60_000 });
+    return (await exists.isVisible().catch(() => false)) ? 'exists' : 'created';
   }
 
   /** Role dropdowns in step 2 of the wizard (one per "Add another role" row). */
@@ -80,10 +89,17 @@ export class GcpConsole {
     }
     await this.rolePickers.nth(index).click();
 
-    // The picker opens a panel with a filter box; narrow it down, then pick the exact title.
+    // The picker opens a panel with a filter box; narrow it down, then pick the role.
     const filter = this.page.getByRole('textbox', { name: /filter/i }).last();
     await filter.fill(roleName);
-    await this.page.getByRole('option', { name: roleName, exact: true }).first().click();
+
+    // An option's accessible name is sometimes the title alone ("Owner") and sometimes the
+    // title plus its description ("Owner Full access to most Google Cloud resources...").
+    // `\b` after the title keeps "Service Account Admin" from matching "Service Account Key Admin".
+    const exact = this.page.getByRole('option', { name: roleName, exact: true }).first();
+    const prefix = this.page.getByRole('option', { name: new RegExp(`^\\s*${escapeRe(roleName)}\\b`) }).first();
+    await expect(exact.or(prefix).first()).toBeVisible();
+    await ((await exact.isVisible()) ? exact : prefix).click();
 
     await expect(this.rolePickers.nth(index)).toContainText(roleName);
   }
@@ -107,9 +123,32 @@ export class GcpConsole {
     return this.page.getByRole('row').filter({ hasText: email });
   }
 
+  /** True if the service account is in the list (opens the list page). */
+  async serviceAccountListed(email: string): Promise<boolean> {
+    await this.openServiceAccountList();
+    await this.filterList(email);
+    // The table loads after the page; give it a moment before deciding the row isn't there.
+    await this.page.getByRole('row').nth(1).waitFor({ timeout: 30_000 }).catch(() => {});
+    return this.serviceAccountRow(email).first().isVisible({ timeout: 5_000 }).catch(() => false);
+  }
+
+  /** Type into the list's filter box so pagination can't hide the row. Best effort. */
+  private async filterList(text: string): Promise<void> {
+    const filter = this.page
+      .getByPlaceholder(/filter/i)
+      .or(this.page.getByRole('textbox', { name: /filter/i }))
+      .or(this.page.getByRole('combobox', { name: /filter/i }))
+      .first();
+    if (await filter.isVisible({ timeout: 5_000 }).catch(() => false)) {
+      await filter.fill(text);
+      await filter.press('Enter');
+    }
+  }
+
   /** Open the service account details page and switch to the Keys tab. */
   async openKeysTab(email: string): Promise<void> {
     await this.openServiceAccountList();
+    await this.filterList(email);
     await this.page.getByRole('link', { name: email, exact: true }).click();
     await this.page.waitForURL(/\/iam-admin\/serviceaccounts\/details\//);
     await this.page.getByRole('tab', { name: 'Keys', exact: true }).click();
@@ -119,8 +158,8 @@ export class GcpConsole {
   // ---------------------------------------------------------------- keys
 
   /**
-   * Keys tab: Add key → Create new key → JSON → Create.
-   * Returns the downloaded file, or throws a clear error if an org policy blocks key creation.
+   * Keys tab: Add key → Create new key → JSON → Create, and save the download to `savePath`.
+   * Throws a clear error if an org policy blocks key creation.
    */
   async createJsonKey(savePath: string): Promise<void> {
     await this.page.getByRole('button', { name: 'Add key' }).click();
@@ -132,21 +171,34 @@ export class GcpConsole {
 
     const download = this.page.waitForEvent('download', { timeout: 60_000 });
     const policyError = this.page
-      .getByText(/key creation is disabled|iam\.disableServiceAccountKeyCreation/i)
+      .getByText(/key creation is disabled|iam\.disableServiceAccountKeyCreation|iam\.managed\.disableServiceAccountKeyCreation/i)
       .first()
       .waitFor({ timeout: 60_000 })
       .then(() => 'blocked' as const);
+    policyError.catch(() => {}); // the losing waiter times out; ignore it
 
     await dialog.getByRole('button', { name: 'Create', exact: true }).click();
 
-    const result = await Promise.race([download, policyError]);
+    const tooManyKeys = this.page
+      .getByText(/maximum number of keys|key quota|exceeded.*keys|keys.*limit/i)
+      .first()
+      .waitFor({ timeout: 60_000 })
+      .then(() => 'limit' as const);
+    tooManyKeys.catch(() => {});
+
+    const result = await Promise.race([download, policyError, tooManyKeys]);
     if (result === 'blocked') {
       throw new Error(
         'Key creation is blocked by the organization policy iam.disableServiceAccountKeyCreation. ' +
           'Ask an org admin to allow it for this project.',
       );
     }
-    policyError.catch(() => {}); // the losing waiter will time out; ignore it
+    if (result === 'limit') {
+      throw new Error(
+        'This service account already has the maximum of 10 keys. Delete old keys on its Keys tab, ' +
+          'or point SA_KEY_FILE at a key you already have.',
+      );
+    }
     await result.saveAs(savePath);
 
     // Confirmation dialog: "Private key saved to your computer".
