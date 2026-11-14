@@ -90,15 +90,24 @@ test.describe(`GCP service account "${cfg.saId}" in project "${cfg.projectId}"`,
       }
       console.log(`${cfg.saEmail} already exists - using it as it is (not creating it again), checking its roles.`);
     } else {
+      // If a role can't be picked in the wizard, the account still exists: leave the wizard and
+      // let the IAM step below grant whatever is missing.
+      let wizardRolesOk = true;
       await test.step(`Step 2: assign roles: ${roleNames.join(', ')}`, async () => {
-        for (const [index, role] of roleNames.entries()) {
-          await gcp.addRole(role, index);
+        try {
+          for (const [index, role] of roleNames.entries()) {
+            await gcp.addRole(role, index);
+          }
+        } catch (e) {
+          wizardRolesOk = false;
+          console.warn(`Could not assign roles in the wizard (${(e as Error).message.split('\n')[0]}). ` +
+            'They will be granted on the IAM page instead.');
         }
-        await expect(gcp.rolePickers).toHaveCount(roleNames.length);
       });
 
       await test.step('Step 3: finish the wizard', async () => {
-        await gcp.finishWizard();
+        if (wizardRolesOk) await gcp.finishWizard();
+        else await gcp.abandonWizard();
       });
     }
 
@@ -110,16 +119,18 @@ test.describe(`GCP service account "${cfg.saId}" in project "${cfg.projectId}"`,
       if (!exists) await expect(row).toContainText(cfg.saDisplayName);
     });
 
-    await test.step('IAM page shows all required roles for the account', async () => {
-      const row = await gcp.iamRowFor(cfg.saEmail);
-      for (const role of roleNames) {
-        await expect(
-          row,
-          exists
-            ? `Existing account ${cfg.saEmail} is missing role "${role}". Add it on the IAM page, or delete the account and re-run.`
-            : `IAM row should contain role "${role}"`,
-        ).toContainText(role);
+    await test.step('IAM page shows all required roles (missing ones are granted)', async () => {
+      let missing = await gcp.missingRoles(cfg.saEmail, roleNames);
+      if (missing.length) {
+        console.log(`${cfg.saEmail} is missing: ${missing.join(', ')} - granting them on the IAM page.`);
+        await gcp.grantRoles(cfg.saEmail, missing);
+        // IAM changes take a moment to show up.
+        await expect
+          .poll(async () => (missing = await gcp.missingRoles(cfg.saEmail, roleNames)), { timeout: 300_000, intervals: [15_000] })
+          .toEqual([]);
       }
+      expect(missing, `${cfg.saEmail} is missing roles`).toEqual([]);
+      console.log(`${cfg.saEmail} has all required roles: ${roleNames.join(', ')}.`);
     });
 
     if (gcloud.gcloudAvailable()) {

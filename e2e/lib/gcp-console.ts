@@ -137,34 +137,123 @@ export class GcpConsole {
     return this.page.getByRole('combobox', { name: /role/i });
   }
 
-  /** Step 2: pick `roleName` in the role dropdown at row `index`, adding a new row if needed. */
-  async addRole(roleName: string, index: number): Promise<void> {
-    if (index > 0) {
-      await this.page.getByRole('button', { name: 'Add another role' }).click();
-      await expect(this.rolePickers).toHaveCount(index + 1);
-    }
-    await this.rolePickers.nth(index).click();
-
-    // The picker opens a panel with a filter box; narrow it down, then pick the role.
-    const filter = this.page.getByRole('textbox', { name: /filter/i }).last();
-    await filter.fill(roleName);
-
-    // An option's accessible name is sometimes the title alone ("Owner") and sometimes the
-    // title plus its description ("Owner Full access to most Google Cloud resources...").
-    // `\b` after the title keeps "Service Account Admin" from matching "Service Account Key Admin".
-    const exact = this.page.getByRole('option', { name: roleName, exact: true }).first();
-    const prefix = this.page.getByRole('option', { name: new RegExp(`^\\s*${escapeRe(roleName)}\\b`) }).first();
-    await expect(exact.or(prefix).first()).toBeVisible();
-    await ((await exact.isVisible()) ? exact : prefix).click();
-
-    await expect(this.rolePickers.nth(index)).toContainText(roleName);
+  /** The open dropdown panel (Angular CDK overlay); falls back to the whole page. */
+  private get overlay(): Locator {
+    return this.page.locator('.cdk-overlay-container .cdk-overlay-pane').last();
   }
 
-  /** Steps 2 and 3: Continue, then Done. Waits until we're back on the service account list. */
+  /**
+   * The search box at the top of the open role picker. Its label is "Search" with the
+   * placeholder "Service, role or permission" (older Consoles: "Filter"). Looked up inside the
+   * open panel first, so the Console's own search bar at the top of the page isn't used.
+   */
+  private async roleSearchBox(): Promise<Locator> {
+    const inPanel = this.overlay.locator('input:visible').first();
+    if (await inPanel.isVisible({ timeout: 10_000 }).catch(() => false)) return inPanel;
+    return this.page
+      .getByPlaceholder(/service, role or permission|filter/i)
+      .or(this.page.getByRole('textbox', { name: /filter/i }))
+      .last();
+  }
+
+  /**
+   * Pick `roleName` in the role dropdown at row `index`, adding a row with "Add another role"
+   * first if needed. Works in the create wizard and in IAM "Grant access".
+   */
+  async addRole(roleName: string, index: number): Promise<void> {
+    if (index > 0) {
+      const before = await this.rolePickers.count();
+      await this.page.getByRole('button', { name: /add another role/i }).first().click();
+      await expect(this.rolePickers).toHaveCount(before + 1);
+    }
+    const picker = this.rolePickers.nth(index);
+    await expect(picker).toBeVisible({ timeout: 60_000 });
+    await picker.click();
+
+    const search = await this.roleSearchBox();
+    await search.fill(roleName);
+
+    // Results show role titles, sometimes with a description in the same option. Match the exact
+    // title ("Service Account Admin" must not pick "Service Account Key Admin"), inside the open
+    // panel when there is one.
+    const scope = (await this.overlay.isVisible().catch(() => false)) ? this.overlay : this.page.locator('body');
+    const titleRe = new RegExp(`^\\s*${escapeRe(roleName)}(\\s|$)`);
+    const choice = scope
+      .getByRole('option', { name: roleName, exact: true })
+      .or(scope.getByRole('menuitem', { name: roleName, exact: true }))
+      .or(scope.getByRole('option', { name: titleRe }))
+      .or(scope.getByText(roleName, { exact: true }))
+      .first();
+    await expect(choice, `role "${roleName}" not found in the role picker`).toBeVisible({ timeout: 30_000 });
+    await choice.click();
+
+    // The picker now shows the chosen role (in its text, or as the value of its input).
+    const shown = await expect(picker).toContainText(roleName, { timeout: 15_000 }).then(() => true, () => false);
+    if (!shown) {
+      await expect(this.overlay, `role picker for "${roleName}" did not close`).toBeHidden({ timeout: 10_000 });
+      const value = await picker.evaluate((el) => (el as HTMLInputElement).value ?? el.querySelector('input')?.value ?? '').catch(() => '');
+      if (!value.includes(roleName)) {
+        await expect(this.page.locator('main').getByText(roleName, { exact: true }).first(), `role "${roleName}" was not selected`).toBeVisible();
+      }
+    }
+  }
+
+  /** Wizard steps 2 and 3: Continue (if shown), then Done; waits until it's back on the list. */
   async finishWizard(): Promise<void> {
-    await this.page.getByRole('button', { name: 'Continue', exact: true }).click();
+    const cont = this.page.getByRole('button', { name: 'Continue', exact: true });
+    if (await cont.isVisible({ timeout: 5_000 }).catch(() => false)) await cont.click();
     await this.page.getByRole('button', { name: 'Done', exact: true }).click();
     await this.page.waitForURL(/\/iam-admin\/serviceaccounts(\?|$)/, { timeout: PAGE_LOAD, waitUntil: 'commit' });
+  }
+
+  /** Leave the wizard without roles (used when picking a role fails): the account already exists. */
+  async abandonWizard(): Promise<void> {
+    await this.page.keyboard.press('Escape').catch(() => {});
+    const done = this.page.getByRole('button', { name: 'Done', exact: true });
+    if (await done.isVisible({ timeout: 5_000 }).catch(() => false)) {
+      await done.click().catch(() => {});
+      await this.page.waitForURL(/\/iam-admin\/serviceaccounts(\?|$)/, { timeout: 60_000, waitUntil: 'commit' }).catch(() => {});
+    }
+  }
+
+  // ---------------------------------------------------------------- IAM roles
+
+  /** Which of `roles` the principal does NOT have, read from its row on the IAM page. */
+  async missingRoles(email: string, roles: readonly string[]): Promise<string[]> {
+    await this.goto(urls.iam());
+    await this.waitForTableOrFilter(PAGE_LOAD);
+    await this.filterList(email);
+    const row = this.tableRows.filter({ hasText: email }).first();
+    // An account with no roles at all has no row on the IAM page.
+    const text = (await row.isVisible({ timeout: 30_000 }).catch(() => false)) ? await row.innerText() : '';
+    return roles.filter((r) => !new RegExp(`(^|[\\s,])${escapeRe(r)}($|[\\s,])`).test(text));
+  }
+
+  /** IAM page → "Grant access": add `roles` for the principal `email`, then Save. */
+  async grantRoles(email: string, roles: readonly string[]): Promise<void> {
+    await this.goto(urls.iam());
+    await this.waitForTableOrFilter(PAGE_LOAD);
+    const grant = this.page.getByRole('button', { name: /grant access/i }).first();
+    await expect(grant).toBeVisible({ timeout: PAGE_LOAD });
+    await grant.click();
+
+    const principals = this.page
+      .getByLabel(/new principals/i)
+      .or(this.page.getByRole('combobox', { name: /principals/i }))
+      .or(this.page.getByPlaceholder(/principal/i))
+      .first();
+    await expect(principals, '"New principals" field not found in Grant access').toBeVisible({ timeout: 60_000 });
+    await principals.fill(email);
+    // The field turns the email into a chip; pick the suggestion if one appears, else press Enter.
+    const suggestion = this.page.getByRole('option', { name: new RegExp(escapeRe(email)) }).first();
+    if (await suggestion.isVisible({ timeout: 10_000 }).catch(() => false)) await suggestion.click();
+    else await principals.press('Enter');
+
+    for (const [i, role] of roles.entries()) await this.addRole(role, i);
+
+    await this.page.getByRole('button', { name: 'Save', exact: true }).click();
+    // The panel closes when the policy is saved.
+    await expect(principals).toBeHidden({ timeout: 120_000 });
   }
 
   // ---------------------------------------------------------------- list / details
