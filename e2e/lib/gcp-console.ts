@@ -237,23 +237,29 @@ export class GcpConsole {
     await expect(grant).toBeVisible({ timeout: PAGE_LOAD });
     await grant.click();
 
-    const principals = this.page
-      .getByLabel(/new principals/i)
-      .or(this.page.getByRole('combobox', { name: /principals/i }))
-      .or(this.page.getByPlaceholder(/principal/i))
+    // The side panel "Grant access to <project>". Its "New principals" field is a combobox named
+    // "New principals, Add a principal" inside a hidden chip container that carries a similar label,
+    // so look for the combobox (or the chip input) only, never by label text.
+    const panel = this.page.getByRole('dialog').filter({ hasText: /grant access/i }).last();
+    await expect(panel, '"Grant access" panel did not open').toBeVisible({ timeout: 60_000 });
+    const principals = panel
+      .getByRole('combobox', { name: /new principals|add a principal/i })
+      .or(panel.locator('mat-chip-grid input, input[matchipinput]'))
       .first();
     await expect(principals, '"New principals" field not found in Grant access').toBeVisible({ timeout: 60_000 });
+    await principals.click();
     await principals.fill(email);
     // The field turns the email into a chip; pick the suggestion if one appears, else press Enter.
     const suggestion = this.page.getByRole('option', { name: new RegExp(escapeRe(email)) }).first();
     if (await suggestion.isVisible({ timeout: 10_000 }).catch(() => false)) await suggestion.click();
     else await principals.press('Enter');
+    await expect(panel.getByText(email).filter({ visible: true }).first(), `${email} was not added as a principal`).toBeVisible({ timeout: 15_000 });
 
     for (const [i, role] of roles.entries()) await this.addRole(role, i);
 
-    await this.page.getByRole('button', { name: 'Save', exact: true }).click();
+    await panel.getByRole('button', { name: 'Save', exact: true }).click();
     // The panel closes when the policy is saved.
-    await expect(principals).toBeHidden({ timeout: 120_000 });
+    await expect(panel, 'Grant access panel did not close after Save').toBeHidden({ timeout: 120_000 });
   }
 
   // ---------------------------------------------------------------- list / details
