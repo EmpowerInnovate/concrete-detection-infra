@@ -15,3 +15,9 @@ override.tf.json
 # Ignore CLI configuration files
 .terraformrc
 terraform.rc
+
+# GCP service account keys - never commit (see gcp-keys/README.md)
+*-key.json
+*-key.json.b64
+*.tar.gz.age
+*-key-encrypted.zip

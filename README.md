@@ -4,6 +4,8 @@ This repository contains the Infrastructure-as-Code (IaC) workflows and Terrafor
 
 For a detailed visual mapping of the IAM role hierarchy and architecture for GCP, refer to the [Service Account Architecture Diagram](service_account_architecture_diagram.md).
 
+> **GCP in 3 pipelines (no secrets):** **GCP 1 - Main service account + key** → **GCP 2 - Cluster service account + key** → **GCP 3 - GKE cluster**. Each one gives you a base64 one-liner key for the next. See [gcp-keys/README.md](gcp-keys/README.md).
+
 ---
 
 ## Supported Cloud Providers

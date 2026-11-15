@@ -1,7 +1,7 @@
 resource "google_container_node_pool" "primary" {
   name     = "primary-node-pool"
   cluster  = google_container_cluster.crack_detection.name
-  location = "us-central1-a"
+  location = var.zone # same zone as the cluster (main.tf)
 
   autoscaling {
     min_node_count = 3
