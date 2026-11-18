@@ -1,7 +1,0 @@
-# SSH PUBLIC keys that may open the keys made by pipelines GCP 1 and GCP 2 (one per line).
-# Public keys are not secret - committing them is safe. Only the matching private key can decrypt.
-#
-# Add yours once (on your computer, from the repo root), then commit and push:
-#   cat ~/.ssh/id_ed25519.pub >> gcp-keys/recipients.txt
-# No SSH key yet?  ssh-keygen -t ed25519
-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM9tIkAp+5Bzp0UfHoA3UAVrC3sZtTMTG2lt5EVQoKU9 piyush@piyush-Latitude-5501
