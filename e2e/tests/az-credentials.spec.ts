@@ -58,7 +58,7 @@ test('1. service principal + client secret (reused if the secret still works, el
     });
     console.log(`Saved service principal ${clientId} and its new secret to ${azCfg.credentialsFile}`);
   } finally {
-    await context.close();
+    await context.close().catch((e) => console.warn(`(ignored) closing the Portal window: ${e.message.split('\n')[0]}`));
   }
 });
 
@@ -90,7 +90,7 @@ test('2. Contributor + User Access Administrator on the subscription (missing on
         });
       }
     } finally {
-      await context.close();
+      await context.close().catch((e) => console.warn(`(ignored) closing the Portal window: ${e.message.split('\n')[0]}`));
     }
     have = await rolesOf(creds);
   }

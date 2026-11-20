@@ -95,7 +95,13 @@ export default defineConfig({
       name: 'az-portal',
       testMatch: /az-credentials\.spec\.ts/,
       dependencies: ['setup'],
-      use: { storageState: fs.existsSync(AZ_AUTH_FILE) ? AZ_AUTH_FILE : undefined },
+      use: {
+        storageState: fs.existsSync(AZ_AUTH_FILE) ? AZ_AUTH_FILE : undefined,
+        // The Portal streams a lot; a trace/video of a long manual wait is huge and saving it can fail
+        // after the real work is done. Failure screenshots are still kept.
+        trace: 'off',
+        video: 'off',
+      },
     },
     {
       // AKS cluster pipeline (AZ_CLUSTER=1). `npm run az:all` gets the credentials first;
