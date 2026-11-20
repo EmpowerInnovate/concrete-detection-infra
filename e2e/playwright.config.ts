@@ -2,7 +2,7 @@ import { defineConfig } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 import dotenv from 'dotenv';
-import { AUTH_FILE, DO_AUTH_FILE, GITHUB_AUTH_FILE } from './lib/paths';
+import { AUTH_FILE, AZ_AUTH_FILE, DO_AUTH_FILE, GITHUB_AUTH_FILE } from './lib/paths';
 
 dotenv.config({ path: path.join(__dirname, '.env') });
 
@@ -15,6 +15,7 @@ const headless = (process.env.HEADLESS ?? 'false').toLowerCase() === 'true';
 const fullFlow = process.env.FULL_FLOW === '1';
 const appSa = process.env.APP_SA === '1';
 const doFullFlow = process.env.DO_FULL_FLOW === '1';
+const azFullFlow = process.env.AZ_FULL_FLOW === '1';
 
 export default defineConfig({
   testDir: './tests',
@@ -87,6 +88,21 @@ export default defineConfig({
       name: 'do-cluster',
       testMatch: /do-cluster-pipeline\.spec\.ts/,
       dependencies: doFullFlow ? ['do-console'] : ['setup'],
+      use: { storageState: GITHUB_AUTH_FILE },
+    },
+    {
+      // Azure: service principal + client secret + roles (reused while they work, else made in the Portal).
+      name: 'az-portal',
+      testMatch: /az-credentials\.spec\.ts/,
+      dependencies: ['setup'],
+      use: { storageState: fs.existsSync(AZ_AUTH_FILE) ? AZ_AUTH_FILE : undefined },
+    },
+    {
+      // AKS cluster pipeline (AZ_CLUSTER=1). `npm run az:all` gets the credentials first;
+      // `npm run az:cluster` reuses the ones already in output/azure-credentials.json.
+      name: 'az-cluster',
+      testMatch: /az-cluster-pipeline\.spec\.ts/,
+      dependencies: azFullFlow ? ['az-portal'] : ['setup'],
       use: { storageState: GITHUB_AUTH_FILE },
     },
   ],

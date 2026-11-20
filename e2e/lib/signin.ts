@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
-import { AUTH_FILE, DO_AUTH_FILE, GITHUB_AUTH_FILE } from './paths';
+import { AUTH_FILE, AZ_AUTH_FILE, DO_AUTH_FILE, GITHUB_AUTH_FILE } from './paths';
 
 /**
  * Manual sign-in. Google and GitHub block scripted logins (CAPTCHA, 2FA, "browser not secure"),
@@ -124,5 +124,34 @@ export async function waitForDoSignIn(page: Page): Promise<boolean> {
   await page.waitForLoadState('domcontentloaded');
   console.log('DigitalOcean: signed in.');
   await saveSession(page, DO_AUTH_FILE);
+  return true;
+}
+
+// ---------------------------------------------------------------- Azure Portal
+
+/** Signed in when the Portal itself is shown (not login.microsoftonline.com / login.live.com). */
+export const onAzurePortal = (page: Page) => new URL(page.url()).hostname === 'portal.azure.com';
+
+/**
+ * Call after navigating to a Portal URL. If Microsoft sent you to its sign-in page, wait for you to
+ * sign in by hand (password, MFA, account picker), save the session, and return true.
+ */
+export async function waitForAzureSignIn(page: Page): Promise<boolean> {
+  await page.waitForTimeout(3_000); // the Portal redirects to login.microsoftonline.com client-side
+  if (onAzurePortal(page)) return false;
+
+  if (headless()) {
+    throw new Error('Azure session expired or missing. Run `npm run az:auth` in e2e/ (or run with HEADLESS=false) and sign in.');
+  }
+  await page.bringToFront();
+  announce([
+    'ACTION NEEDED: sign in to the Azure Portal',
+    'Sign in in the Chrome window with an account that is Owner (or User Access Administrator) on the subscription.',
+    'The run continues by itself once the Portal opens. Waiting up to 10 minutes...',
+  ]);
+  await page.waitForURL((u) => u.hostname === 'portal.azure.com', { timeout: SIGN_IN_WAIT_MS });
+  await page.waitForLoadState('domcontentloaded');
+  console.log('Azure: signed in.');
+  await saveSession(page, AZ_AUTH_FILE);
   return true;
 }

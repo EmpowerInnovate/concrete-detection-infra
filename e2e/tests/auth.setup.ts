@@ -1,22 +1,22 @@
 import { test as setup } from '@playwright/test';
 import fs from 'node:fs';
-import { doCfg, doOnly, githubCfg } from '../lib/config';
-import { AUTH_FILE, DO_AUTH_FILE, GITHUB_AUTH_FILE } from '../lib/paths';
-import { SIGN_IN_WAIT_MS, githubUser, saveSession, waitForDoSignIn, waitForGitHubSignIn, waitForGoogleSignIn } from '../lib/signin';
+import { azCfg, doCfg, gcpNotNeeded, githubCfg } from '../lib/config';
+import { AUTH_FILE, AZ_AUTH_FILE, DO_AUTH_FILE, GITHUB_AUTH_FILE } from '../lib/paths';
+import { SIGN_IN_WAIT_MS, githubUser, saveSession, waitForAzureSignIn, waitForDoSignIn, waitForGitHubSignIn, waitForGoogleSignIn } from '../lib/signin';
 
 /**
  * Sign-in, done by hand. The saved session in .auth/ is tried first; if it still works,
  * nothing is asked. Otherwise the terminal says "ACTION NEEDED", you sign in in the Chrome
  * window, and the session is saved for the real tests to reuse.
  *
- * `npm run auth` forces a fresh sign-in (FORCE_AUTH=1); `npm run do:auth` does the same for DigitalOcean.
- * DigitalOcean is otherwise signed in to only when a token or Spaces key has to be created.
+ * `npm run auth` forces a fresh sign-in (FORCE_AUTH=1); `npm run do:auth` / `npm run az:auth` do the same for
+ * DigitalOcean / Azure, which are otherwise signed in to only when something has to be created there.
  */
 
 const savedState = (file: string) => (fs.existsSync(file) && !process.env.FORCE_AUTH ? file : undefined);
 
 setup('sign in to the Google Cloud Console', async ({ browser }) => {
-  setup.skip(doOnly, 'Google is not needed for the DigitalOcean flow');
+  setup.skip(gcpNotNeeded, 'Google is not needed for the DigitalOcean / Azure flows');
   setup.setTimeout(SIGN_IN_WAIT_MS + 2 * 60_000);
   const context = await browser.newContext({ storageState: savedState(AUTH_FILE) });
   const page = await context.newPage();
@@ -52,6 +52,19 @@ setup('sign in to DigitalOcean', async ({ browser }) => {
   if (!(await waitForDoSignIn(page))) {
     console.log('DigitalOcean session is still valid - no sign-in needed.');
     await saveSession(page, DO_AUTH_FILE);
+  }
+  await context.close();
+});
+
+setup('sign in to the Azure Portal', async ({ browser }) => {
+  setup.skip(!(azCfg.needed && process.env.FORCE_AUTH), 'Azure sign-in happens on demand (npm run az:auth forces it)');
+  setup.setTimeout(SIGN_IN_WAIT_MS + 2 * 60_000);
+  const context = await browser.newContext({ storageState: savedState(AZ_AUTH_FILE) });
+  const page = await context.newPage();
+  await page.goto('https://portal.azure.com/', { waitUntil: 'domcontentloaded' });
+  if (!(await waitForAzureSignIn(page))) {
+    console.log('Azure session is still valid - no sign-in needed.');
+    await saveSession(page, AZ_AUTH_FILE);
   }
   await context.close();
 });

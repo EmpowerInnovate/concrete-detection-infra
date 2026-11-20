@@ -34,7 +34,11 @@ export const REQUIRED_ROLES = [
 const runId = process.env.E2E_RUN_ID ?? Date.now().toString(36);
 /** DigitalOcean-only runs (npm run do:*) don't need any GCP settings. */
 export const doOnly = process.env.DO_ONLY === '1';
-const projectId = doOnly ? process.env.GCP_PROJECT_ID?.trim() || 'not-used' : required('GCP_PROJECT_ID');
+/** Azure-only runs (npm run az:*) don't need any GCP settings either. */
+export const azOnly = process.env.AZ_ONLY === '1';
+/** True for runs that never touch GCP (no GCP_PROJECT_ID, no Google sign-in). */
+export const gcpNotNeeded = doOnly || azOnly;
+const projectId = gcpNotNeeded ? process.env.GCP_PROJECT_ID?.trim() || 'not-used' : required('GCP_PROJECT_ID');
 // SA IDs must be 6-30 chars: lowercase letters, digits and hyphens, starting with a letter.
 const explicitSaId = process.env.SA_ID?.trim();
 const saId = explicitSaId || `e2e-sa-${runId}`;
@@ -87,7 +91,7 @@ const backendBucket = process.env.GCP_BACKEND_BUCKET?.trim() || 'crack-detection
 
 export const githubCfg = {
   /** GitHub sign-in is only needed when a pipeline runs. */
-  needed: process.env.CLUSTER === '1' || process.env.APP_SA === '1' || process.env.DO_CLUSTER === '1',
+  needed: process.env.CLUSTER === '1' || process.env.APP_SA === '1' || process.env.DO_CLUSTER === '1' || process.env.AZ_CLUSTER === '1',
   repo: process.env.GITHUB_REPO?.trim() || 'EmpowerInnovate/concrete-detection-infra',
   /**
    * manual (default): the test opens the "Run workflow" form, pre-fills it, and waits for YOU to
@@ -184,4 +188,39 @@ export const doCfg = {
   timeoutMs: Number(process.env.CLUSTER_TIMEOUT_MIN || 45) * 60_000,
   /** How long to wait for you, if the control panel needs a hand (minutes). */
   manualWaitMs: Number(process.env.DO_MANUAL_WAIT_MIN || 10) * 60_000,
+};
+
+// ---------------------------------------------------------------- Azure (AKS)
+
+/**
+ * Settings for the Azure flow (tests/az-*.spec.ts):
+ *   Azure Portal: service principal (app registration) + client secret + Contributor and
+ *   User Access Administrator on the subscription -> "Deploy Kubernetes Cluster" with provider = azure.
+ */
+export const azCfg = {
+  /** Portal sign-in is only needed when something has to be created or assigned. */
+  needed: process.env.AZ === '1',
+  /** Set by npm run az:all / az:cluster / az:cluster:destroy. */
+  clusterEnabled: process.env.AZ_CLUSTER === '1',
+  action: process.env.CLUSTER_ACTION?.trim() || 'apply',
+  /** Required for the Azure commands. Azure Portal -> Subscriptions -> Subscription ID. */
+  subscriptionId: process.env.AZ_SUBSCRIPTION_ID?.trim() || '',
+  /** Found automatically from the subscription when left empty. */
+  tenantId: process.env.AZ_TENANT_ID?.trim() || '',
+  /** Name of the app registration / service principal (created only if missing). */
+  appName: process.env.AZ_SP_NAME?.trim() || 'crack-detection-aks-sp',
+  /** As offered in the Portal: 90 days (3 months) | 180 days (6 months) | 365 days (12 months) | 545 days (18 months) | 730 days (24 months) */
+  secretExpiry: process.env.AZ_SECRET_EXPIRY?.trim() || '180 days',
+  clusterName: process.env.AZ_CLUSTER_NAME?.trim() || 'crack-detection-cluster',
+  location: process.env.AZ_LOCATION?.trim() || 'eastus',
+  /** Terraform state storage account (3-24 lowercase letters/digits, globally unique). The pipeline
+   *  creates it with its resource group and tfstate container if missing. Empty = derived from the subscription. */
+  storageAccount: process.env.AZ_STORAGE_ACCOUNT?.trim() || '',
+  /** Always create a new client secret, even if the saved one still works. */
+  newSecret: flag('AZ_NEW_SECRET', false),
+  credentialsFile: path.join(__dirname, '..', 'output', 'azure-credentials.json'),
+  waitForRun: flag('WAIT_FOR_CLUSTER', true),
+  timeoutMs: Number(process.env.CLUSTER_TIMEOUT_MIN || 45) * 60_000,
+  /** How long to wait for you if the Portal needs a hand (minutes). */
+  manualWaitMs: Number(process.env.AZ_MANUAL_WAIT_MIN || 10) * 60_000,
 };

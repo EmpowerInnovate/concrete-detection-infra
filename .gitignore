@@ -16,7 +16,7 @@ override.tf.json
 .terraformrc
 terraform.rc
 
-# GCP service account keys - never commit (see gcp-keys/README.md)
+# Service account keys and credentials - never commit (see e2e/README.md)
 *-key.json
 *-key.json.b64
 *-key.zip

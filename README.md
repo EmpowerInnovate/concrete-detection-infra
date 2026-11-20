@@ -4,7 +4,7 @@ This repository contains the Infrastructure-as-Code (IaC) workflows and Terrafor
 
 For a detailed visual mapping of the IAM role hierarchy and architecture for GCP, refer to the [Service Account Architecture Diagram](service_account_architecture_diagram.md).
 
-> **GCP in 3 pipelines (no secrets):** **GCP 1 - Main service account + key** → **GCP 2 - Cluster service account + key** → **GCP 3 - GKE cluster**. Pipelines 1 and 2 give you the key as a single-line base64 artifact to paste into the next one. See [gcp-keys/README.md](gcp-keys/README.md).
+> **Automated (Playwright):** [`e2e/`](e2e/README.md) does the manual GCP Console, DigitalOcean and Azure Portal steps (service account, roles, key; API token, Spaces key; service principal, secret, roles) in a real browser, then starts **Deploy Kubernetes Cluster** and follows it. GCP: `cd e2e && npm run all`; DigitalOcean: `cd e2e && npm run do:all`; Azure: `cd e2e && npm run az:all`. See [e2e/README.md](e2e/README.md).
 
 ---
 
