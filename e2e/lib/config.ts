@@ -32,7 +32,9 @@ export const REQUIRED_ROLES = [
 ] as const;
 
 const runId = process.env.E2E_RUN_ID ?? Date.now().toString(36);
-const projectId = required('GCP_PROJECT_ID');
+/** DigitalOcean-only runs (npm run do:*) don't need any GCP settings. */
+export const doOnly = process.env.DO_ONLY === '1';
+const projectId = doOnly ? process.env.GCP_PROJECT_ID?.trim() || 'not-used' : required('GCP_PROJECT_ID');
 // SA IDs must be 6-30 chars: lowercase letters, digits and hyphens, starting with a letter.
 const explicitSaId = process.env.SA_ID?.trim();
 const saId = explicitSaId || `e2e-sa-${runId}`;
@@ -85,7 +87,7 @@ const backendBucket = process.env.GCP_BACKEND_BUCKET?.trim() || 'crack-detection
 
 export const githubCfg = {
   /** GitHub sign-in is only needed when a pipeline runs. */
-  needed: process.env.CLUSTER === '1' || process.env.APP_SA === '1',
+  needed: process.env.CLUSTER === '1' || process.env.APP_SA === '1' || process.env.DO_CLUSTER === '1',
   repo: process.env.GITHUB_REPO?.trim() || 'EmpowerInnovate/concrete-detection-infra',
   /**
    * manual (default): the test opens the "Run workflow" form, pre-fills it, and waits for YOU to
@@ -153,3 +155,33 @@ export function choiceInputs(): Record<string, string> {
   }
   return inputs;
 }
+
+// ---------------------------------------------------------------- DigitalOcean
+
+/**
+ * Settings for the DigitalOcean flow (tests/do-*.spec.ts):
+ *   API token + Spaces access key in the DigitalOcean control panel -> "Deploy Kubernetes Cluster"
+ *   with provider = digitalocean.
+ */
+export const doCfg = {
+  /** DigitalOcean sign-in is only needed when the token or Spaces key has to be created. */
+  needed: process.env.DO === '1',
+  /** Set by npm run do:all / do:cluster / do:cluster:destroy. */
+  clusterEnabled: process.env.DO_CLUSTER === '1',
+  action: process.env.CLUSTER_ACTION?.trim() || 'apply',
+  clusterName: process.env.DO_CLUSTER_NAME?.trim() || 'crack-detection-cluster',
+  /** nyc3 often has no DOKS capacity; the pipeline falls back to other regions by itself. */
+  region: process.env.DO_REGION?.trim() || 'sfo3',
+  tokenName: process.env.DO_TOKEN_NAME?.trim() || 'crack-detection-terraform',
+  /** As offered in the control panel: 30 days | 60 days | 90 days | 1 year | No expiry */
+  tokenExpiry: process.env.DO_TOKEN_EXPIRY?.trim() || '90 days',
+  spacesKeyName: process.env.DO_SPACES_KEY_NAME?.trim() || 'crack-detection-terraform',
+  /** Always create a new token / Spaces key, even if the saved ones still work. */
+  newCredentials: flag('DO_NEW_CREDENTIALS', false),
+  /** Saved token + Spaces key (gitignored with output/). */
+  credentialsFile: path.join(__dirname, '..', 'output', 'do-credentials.json'),
+  waitForRun: flag('WAIT_FOR_CLUSTER', true),
+  timeoutMs: Number(process.env.CLUSTER_TIMEOUT_MIN || 45) * 60_000,
+  /** How long to wait for you, if the control panel needs a hand (minutes). */
+  manualWaitMs: Number(process.env.DO_MANUAL_WAIT_MIN || 10) * 60_000,
+};

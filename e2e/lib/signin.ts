@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
-import { AUTH_FILE, GITHUB_AUTH_FILE } from './paths';
+import { AUTH_FILE, DO_AUTH_FILE, GITHUB_AUTH_FILE } from './paths';
 
 /**
  * Manual sign-in. Google and GitHub block scripted logins (CAPTCHA, 2FA, "browser not secure"),
@@ -89,5 +89,40 @@ export async function waitForGitHubSignIn(page: Page, repo: string): Promise<boo
   if (!user) throw new Error('GitHub sign-in did not complete.');
   console.log(`GitHub: signed in as ${user}.`);
   await saveSession(page, GITHUB_AUTH_FILE);
+  return true;
+}
+
+// ---------------------------------------------------------------- DigitalOcean
+
+/** Signed in when the control panel stays on cloud.digitalocean.com and isn't a login page. */
+export const onDoPanel = (page: Page) => {
+  const u = new URL(page.url());
+  return u.hostname === 'cloud.digitalocean.com' && !/^\/(login|registrations|sessions|two_factor|oauth)/.test(u.pathname);
+};
+
+/**
+ * Call after navigating to a DigitalOcean control panel URL. If you are not signed in, wait for you
+ * to sign in by hand (password, Google/GitHub SSO and 2FA all work), save the session, return true.
+ */
+export async function waitForDoSignIn(page: Page): Promise<boolean> {
+  await page.waitForTimeout(2_000); // the panel redirects to /login client-side
+  if (onDoPanel(page)) return false;
+
+  if (headless()) {
+    throw new Error('DigitalOcean session expired or missing. Run `npm run do:auth` in e2e/ (or run with HEADLESS=false) and sign in.');
+  }
+  await page.bringToFront();
+  announce([
+    'ACTION NEEDED: sign in to DigitalOcean',
+    'Sign in in the Chrome window (with the team that should own the cluster).',
+    'The run continues by itself once the control panel opens. Waiting up to 10 minutes...',
+  ]);
+  await page.waitForURL(
+    (u) => u.hostname === 'cloud.digitalocean.com' && !/^\/(login|registrations|sessions|two_factor|oauth)/.test(u.pathname),
+    { timeout: SIGN_IN_WAIT_MS },
+  );
+  await page.waitForLoadState('domcontentloaded');
+  console.log('DigitalOcean: signed in.');
+  await saveSession(page, DO_AUTH_FILE);
   return true;
 }

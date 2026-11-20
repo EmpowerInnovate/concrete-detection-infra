@@ -1,7 +1,8 @@
 import { defineConfig } from '@playwright/test';
+import fs from 'node:fs';
 import path from 'node:path';
 import dotenv from 'dotenv';
-import { AUTH_FILE, GITHUB_AUTH_FILE } from './lib/paths';
+import { AUTH_FILE, DO_AUTH_FILE, GITHUB_AUTH_FILE } from './lib/paths';
 
 dotenv.config({ path: path.join(__dirname, '.env') });
 
@@ -13,6 +14,7 @@ process.env.E2E_RUN_ID ??= Date.now().toString(36);
 const headless = (process.env.HEADLESS ?? 'false').toLowerCase() === 'true';
 const fullFlow = process.env.FULL_FLOW === '1';
 const appSa = process.env.APP_SA === '1';
+const doFullFlow = process.env.DO_FULL_FLOW === '1';
 
 export default defineConfig({
   testDir: './tests',
@@ -70,6 +72,21 @@ export default defineConfig({
       name: 'cluster',
       testMatch: /gke-cluster-pipeline\.spec\.ts/,
       dependencies: fullFlow ? [appSa ? 'app-sa' : 'gcp-console'] : ['setup'],
+      use: { storageState: GITHUB_AUTH_FILE },
+    },
+    {
+      // DigitalOcean: API token + Spaces access key (reused while they work, else created in the panel).
+      name: 'do-console',
+      testMatch: /do-credentials\.spec\.ts/,
+      dependencies: ['setup'],
+      use: { storageState: fs.existsSync(DO_AUTH_FILE) ? DO_AUTH_FILE : undefined },
+    },
+    {
+      // DigitalOcean cluster pipeline (DO_CLUSTER=1). `npm run do:all` gets the credentials first;
+      // `npm run do:cluster` reuses the ones already in output/do-credentials.json.
+      name: 'do-cluster',
+      testMatch: /do-cluster-pipeline\.spec\.ts/,
+      dependencies: doFullFlow ? ['do-console'] : ['setup'],
       use: { storageState: GITHUB_AUTH_FILE },
     },
   ],

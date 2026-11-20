@@ -74,6 +74,30 @@ The terminal says which case applied, for example `Reusing key 3f2a… from ~/Do
 
 **Workflow inputs** are checked against the workflow YAML before a run starts, so a renamed input fails immediately.
 
+## DigitalOcean (DOKS) – same flow
+
+| Command | What it does |
+| --- | --- |
+| `npm run do:all` | API token → Spaces access key → **Deploy Kubernetes Cluster** with `provider = digitalocean` → follows the run |
+| `npm run do:credentials` | Only the API token and Spaces access key |
+| `npm run do:cluster` | Only the pipeline, with the saved credentials |
+| `npm run do:cluster:destroy` | Runs the same pipeline with `action = destroy` |
+| `npm run do:auth` | Signs in to DigitalOcean again |
+
+1. **API token** (`do_token`): **API → Tokens → Generate New Token**, with full access and the expiry from `DO_TOKEN_EXPIRY` (default 90 days).
+2. **Spaces access key** (`do_access_key`, `do_secret_key`): **Spaces Object Storage → Access Keys → Create Access Key**, with full access. The pipeline uses it for the Terraform state, and creates or finds the Spaces bucket itself.
+3. **Pipeline:** the **Run workflow** form is pre-filled, then the test **waits for you** to check it and click **Run workflow**, as in the GCP flow. It then follows the run to the end. Creating the cluster usually takes 5–10 minutes.
+
+**Saved credentials are reused.** They're kept in `output/do-credentials.json` (gitignored). Before each run the test checks them: the token against the DigitalOcean API, and the Spaces key with a signed S3 request. Only a missing or revoked one is created again. `DO_NEW_CREDENTIALS=true` always creates new ones. No GCP setup is needed for these commands.
+
+**Sign-in.** DigitalOcean asks you to sign in only when something has to be created in the control panel, and the session is saved in `.auth/do-user.json`. The control panel changes now and then. If a click doesn't land, the terminal says **ACTION NEEDED** with exactly what to do. Do that step by hand: the test still reads the new token or key from the page as soon as DigitalOcean shows it.
+
+**Connect** after `do:all`:
+```bash
+doctl auth init -t "$(python3 -c 'import json;print(json.load(open("output/do-credentials.json"))["token"])')"
+doctl kubernetes cluster kubeconfig save crack-detection-cluster
+```
+
 ## When something breaks
 
 - **A Console or GitHub selector stopped matching.** The Console selectors are all in [lib/gcp-console.ts](lib/gcp-console.ts) and the GitHub ones in [lib/github.ts](lib/github.ts). Run `npm run codegen` to record the current locators.
