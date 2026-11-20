@@ -357,10 +357,19 @@ jobs:
       - name: Install gke-gcloud-auth-plugin
         if: ${{ github.event.inputs.provider == 'gcp' }}
         run: |
-          echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list
-          curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key --keyring /usr/share/keyrings/cloud.google.gpg add -
-          sudo apt-get update -y
-          sudo apt-get install -y google-cloud-cli-gke-gcloud-auth-plugin
+          if command -v gke-gcloud-auth-plugin >/dev/null; then
+            echo "gke-gcloud-auth-plugin is already installed."
+          else
+            # apt-key no longer exists on Ubuntu 24.04 (ubuntu-latest): store Google's signing key
+            # with gpg --dearmor instead, at the keyring path the apt source refers to.
+            curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg \
+              | sudo gpg --batch --yes --dearmor -o /usr/share/keyrings/cloud.google.gpg
+            echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" \
+              | sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list
+            sudo apt-get update -y
+            sudo apt-get install -y google-cloud-cli-gke-gcloud-auth-plugin
+          fi
+          gke-gcloud-auth-plugin --version
 
       # ==== Azure Auth ====
       - name: Authenticate to Azure
