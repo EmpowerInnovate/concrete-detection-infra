@@ -4,6 +4,9 @@ import { appSaCfg, cfg, choiceInputs, clusterCfg, emailOf, githubCfg, keyFiles }
 import { GitHubActions } from '../lib/github';
 
 /**
+ * By default (GITHUB_FORM=manual) the test opens the form, pre-fills it, puts the key on your
+ * clipboard and WAITS for you to check the inputs and click "Run workflow"; GITHUB_FORM=auto submits it.
+ *
  * Replaces the manual GitHub step: Actions → "Deploy Kubernetes Cluster" → Run workflow with
  * provider gcp, the project, and the single-line base64 key from the earlier tests.
  * Then follows the run until the GKE cluster is created (or destroyed with CLUSTER_ACTION=destroy).
@@ -15,7 +18,7 @@ import { GitHubActions } from '../lib/github';
 test.skip(!clusterCfg.enabled, 'Cluster pipeline runs only with CLUSTER=1 (npm run all / npm run cluster)');
 
 test(`${clusterCfg.action} GKE cluster "${clusterCfg.clusterName}" with the deploy pipeline`, async ({ page }) => {
-  test.setTimeout(clusterCfg.timeoutMs + 10 * 60_000);
+  test.setTimeout(clusterCfg.timeoutMs + githubCfg.manualWaitMs + 10 * 60_000);
 
   // Whose key: the admin account (SA_ID) or the app account from "Setup GCP Service Account".
   const accountId = clusterCfg.keyFrom === 'app' ? appSaCfg.name : cfg.saId;
@@ -50,7 +53,11 @@ test(`${clusterCfg.action} GKE cluster "${clusterCfg.clusterName}" with the depl
       gcp_cluster_zone: clusterCfg.zone,
     };
     console.log(`Starting ${clusterCfg.workflowFile}:`);
-    runUrl = await gh.startWorkflow(clusterCfg.workflowFile, inputs, ['gcp_sa_key_base64']);
+    runUrl = await gh.startWorkflow(clusterCfg.workflowFile, inputs, ['gcp_sa_key_base64'], {
+      manual: githubCfg.manualForm,
+      manualWaitMs: githubCfg.manualWaitMs,
+      notes: [`Key file (gcp_sa_key_base64): ${b64File}`, `  copy it:  xclip -selection clipboard < ${b64File}`],
+    });
     console.log(`Run started: ${runUrl}`);
   });
 

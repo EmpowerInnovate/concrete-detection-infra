@@ -1,5 +1,6 @@
 import { expect, type Locator, type Page } from '@playwright/test';
-import { waitForGitHubSignIn } from './signin';
+import { execFileSync } from 'node:child_process';
+import { announce, waitForGitHubSignIn } from './signin';
 import { checkInputs, type WorkflowInput } from './workflow';
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -26,8 +27,8 @@ export class GitHubActions {
     }
   }
 
-  private async runIds(): Promise<Set<string>> {
-    const hrefs = await this.page
+  private async runIds(page: Page = this.page): Promise<Set<string>> {
+    const hrefs = await page
       .locator('a[href*="/actions/runs/"]')
       .evaluateAll((as) => as.map((a) => a.getAttribute('href') ?? ''));
     return new Set(hrefs.map((h) => h.match(/\/actions\/runs\/(\d+)/)?.[1]).filter((x): x is string => !!x));
@@ -41,13 +42,18 @@ export class GitHubActions {
     const byName = panel.locator(`[name="inputs[${input}]"]`);
     if (await byName.count()) return byName.first();
     if (def.description) {
-      const byLabel = panel.getByLabel(def.description.trim(), { exact: true });
+      // GitHub collapses runs of spaces in the label and adds " *" to required inputs, e.g.
+      // "Cloud provider to use *". Match the description from the start, whitespace-tolerant.
+      const words = def.description.trim().split(/\s+/).map(escapeRe).join('\\s+');
+      const label = new RegExp(`^\\s*${words}\\s*\\*?\\s*$`);
+      const byRole = panel.getByRole('combobox', { name: label }).or(panel.getByRole('textbox', { name: label }));
+      if (await byRole.count()) return byRole.first();
+      const byLabel = panel.getByLabel(label);
       if (await byLabel.count()) return byLabel.first();
-      const byLabelLoose = panel.getByLabel(def.description.trim().slice(0, 40), { exact: false });
-      if (await byLabelLoose.count()) return byLabelLoose.first();
     }
     throw new Error(`Workflow input "${input}" not found in the "Run workflow" form. Update lib/github.ts.`);
   }
+
 
   private async setField(panel: Locator, input: string, def: WorkflowInput, value: string) {
     const field = await this.field(panel, input, def);
@@ -75,7 +81,20 @@ export class GitHubActions {
   private workflowPageOf = new Map<string, string>();
 
   /** Opens the workflow, fills "Run workflow" with `inputs`, starts it and returns the run URL. */
-  async startWorkflow(workflowFile: string, inputs: Record<string, string>, secretInputs: string[] = []): Promise<string> {
+  /**
+   * Opens the workflow's "Run workflow" form and starts a run; returns the run URL.
+   *
+   * manual (default): pre-fills what it can, puts the secret input (the key) on the clipboard,
+   *   then WAITS for you to check/enter the inputs and click "Run workflow" yourself. The page you
+   *   type in is never reloaded; a background tab watches for the new run.
+   * auto: fills every input and clicks "Run workflow" itself.
+   */
+  async startWorkflow(
+    workflowFile: string,
+    inputs: Record<string, string>,
+    secretInputs: string[] = [],
+    opts: { manual?: boolean; manualWaitMs?: number; notes?: string[] } = {},
+  ): Promise<string> {
     // Checks names and choice values against the YAML (which also proves it has workflow_dispatch)
     // before touching GitHub.
     const defs = checkInputs(workflowFile, inputs);
@@ -95,17 +114,24 @@ export class GitHubActions {
     const before = await this.runIds();
 
     await runButton.click();
-    const runButtonInPanel = this.page.getByRole('button', { name: 'Run workflow', exact: true });
-    const panel = this.page
-      .locator('form[action*="/actions/manual"]')
-      .or(this.page.getByRole('dialog').filter({ hasText: /Use workflow from|Branch:/i }))
-      .or(this.page.getByRole('dialog').filter({ has: runButtonInPanel }))
-      .last();
-    await expect(panel, 'The "Run workflow" form did not open').toBeVisible({ timeout: 30_000 });
+    // The form is a dialog named "Run workflow" (older GitHub: a dropdown with a form).
+    const dialog = this.page.getByRole('dialog', { name: /run workflow/i });
+    const panel = (await dialog.first().isVisible({ timeout: 15_000 }).catch(() => false))
+      ? dialog.first()
+      : this.page.locator('form[action*="/actions/manual"]').filter({ visible: true }).first();
+    const formOpen = await expect(panel).toBeVisible({ timeout: 30_000 }).then(() => true, () => false);
+    if (!formOpen && !opts.manual) throw new Error('The "Run workflow" form did not open.');
+
+    const shown = (input: string, value: string) =>
+      secretInputs.includes(input) ? `(key, ${value.length} characters)` : value;
+
+    if (opts.manual) {
+      return this.waitForManualRun(workflowUrl, panel, defs, inputs, secretInputs, before, shown, opts);
+    }
 
     for (const [input, value] of Object.entries(inputs)) {
       await this.setField(panel, input, defs[input], value);
-      console.log(`  ${input} = ${secretInputs.includes(input) ? `(hidden, ${value.length} characters)` : value}`);
+      console.log(`  ${input} = ${shown(input, value)}`);
     }
 
     await panel.getByRole('button', { name: 'Run workflow', exact: true }).last().click();
@@ -119,6 +145,95 @@ export class GitHubActions {
       expect(runId, 'new workflow run').not.toBe('');
     }).toPass({ timeout: 180_000, intervals: [5_000] });
 
+    const runUrl = `${this.repoUrl}/actions/runs/${runId}`;
+    this.workflowPageOf.set(runUrl, workflowUrl);
+    return runUrl;
+  }
+
+  /** Copy text to the clipboard (xclip / xsel / wl-copy). Returns false if none is installed. */
+  private copyToClipboard(text: string): boolean {
+    const tools: [string, string[]][] = [
+      ['xclip', ['-selection', 'clipboard']],
+      ['xsel', ['--clipboard', '--input']],
+      ['wl-copy', []],
+    ];
+    for (const [cmd, args] of tools) {
+      try {
+        execFileSync(cmd, args, { input: text, stdio: ['pipe', 'ignore', 'ignore'], timeout: 5_000 });
+        return true;
+      } catch {
+        // not installed / no display - try the next one
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Manual mode: pre-fill (best effort), tell you what to enter, then wait until YOU click
+   * "Run workflow". A background tab polls the run list so the form you type in is never reloaded.
+   */
+  private async waitForManualRun(
+    workflowUrl: string,
+    panel: Locator,
+    defs: Record<string, WorkflowInput>,
+    inputs: Record<string, string>,
+    secretInputs: string[],
+    before: Set<string>,
+    shown: (input: string, value: string) => string,
+    opts: { manualWaitMs?: number; notes?: string[] },
+  ): Promise<string> {
+    const filled: string[] = [];
+    const formOpen = await panel.isVisible().catch(() => false);
+    for (const [input, value] of Object.entries(formOpen ? inputs : {})) {
+      try {
+        await this.setField(panel, input, defs[input], value);
+        filled.push(input);
+      } catch {
+        // Not found or not fillable - you enter it yourself.
+      }
+    }
+    const secret = secretInputs.map((i) => inputs[i]).find(Boolean);
+    const inClipboard = secret ? this.copyToClipboard(secret) : false;
+
+    const lines = [
+      'ACTION NEEDED: check the "Run workflow" form in Chrome and click "Run workflow"',
+      formOpen
+        ? `The form is open on ${workflowUrl}`
+        : `Open it yourself: ${workflowUrl} -> "Run workflow"`,
+      filled.length === Object.keys(inputs).length
+        ? 'All inputs are pre-filled - just check them. Values:'
+        : `Pre-filled ${filled.length} of ${Object.keys(inputs).length}; enter the others (marked *). Values:`,
+      ...Object.entries(inputs).map(
+        ([input, value]) => `  ${filled.includes(input) ? ' ' : '*'} ${input} = ${shown(input, value)}` +
+          (secretInputs.includes(input) && !filled.includes(input)
+            ? (inClipboard ? '  <- in your clipboard, paste it' : '  <- copy it from the file below')
+            : ''),
+      ),
+      ...(opts.notes ?? []),
+      `Waiting up to ${Math.round((opts.manualWaitMs ?? 20 * 60_000) / 60_000)} minutes for the new run...`,
+    ];
+    announce(lines);
+    await this.page.bringToFront();
+
+    // Watch for the new run in a separate tab, so the form isn't reloaded while you type.
+    const watcher = await this.page.context().newPage();
+    await this.page.bringToFront();
+    const deadline = Date.now() + (opts.manualWaitMs ?? 20 * 60_000);
+    let runId = '';
+    try {
+      while (Date.now() < deadline && !runId) {
+        await watcher.goto(workflowUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
+        await watcher.locator('a[href*="/actions/runs/"]').first().waitFor({ timeout: 10_000 }).catch(() => {});
+        runId = [...(await this.runIds(watcher))].find((id) => !before.has(id)) ?? '';
+        if (!runId) await watcher.waitForTimeout(10_000);
+      }
+    } finally {
+      await watcher.close().catch(() => {});
+    }
+    if (!runId) {
+      throw new Error(`No new run of ${workflowUrl} was started within the waiting time. Run the test again when you are ready.`);
+    }
+    console.log(`Thanks - your run started.`);
     const runUrl = `${this.repoUrl}/actions/runs/${runId}`;
     this.workflowPageOf.set(runUrl, workflowUrl);
     return runUrl;

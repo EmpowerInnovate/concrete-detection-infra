@@ -87,6 +87,13 @@ export const githubCfg = {
   /** GitHub sign-in is only needed when a pipeline runs. */
   needed: process.env.CLUSTER === '1' || process.env.APP_SA === '1',
   repo: process.env.GITHUB_REPO?.trim() || 'EmpowerInnovate/concrete-detection-infra',
+  /**
+   * manual (default): the test opens the "Run workflow" form, pre-fills it, and waits for YOU to
+   * check the inputs and click "Run workflow". auto: the test fills and submits it itself.
+   */
+  manualForm: (process.env.GITHUB_FORM?.trim().toLowerCase() || 'manual') !== 'auto',
+  /** How long to wait for you to click "Run workflow" (minutes). */
+  manualWaitMs: Number(process.env.GITHUB_FORM_WAIT_MIN || 20) * 60_000,
   accountName,
   backendBucket,
 };

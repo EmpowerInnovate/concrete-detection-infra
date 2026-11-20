@@ -41,7 +41,7 @@ test(`app service account "${appSaCfg.name}" exists (created by the Setup GCP Se
   page,
   browser,
 }) => {
-  test.setTimeout(appSaCfg.timeoutMs + 10 * 60_000);
+  test.setTimeout(appSaCfg.timeoutMs + githubCfg.manualWaitMs + 10 * 60_000);
 
   const exists = await test.step(`Check whether ${appEmail} already exists`, () => appSaExists(browser));
   if (exists && !appSaCfg.forcePipeline) {
@@ -69,7 +69,11 @@ test(`app service account "${appSaCfg.name}" exists (created by the Setup GCP Se
       gcp_sa_name: appSaCfg.name,
     };
     console.log(`Starting ${appSaCfg.workflowFile}:`);
-    runUrl = await gh.startWorkflow(appSaCfg.workflowFile, inputs, ['gcp_sa_key_base64']);
+    runUrl = await gh.startWorkflow(appSaCfg.workflowFile, inputs, ['gcp_sa_key_base64'], {
+      manual: githubCfg.manualForm,
+      manualWaitMs: githubCfg.manualWaitMs,
+      notes: [`Key file (gcp_sa_key_base64): ${admin.b64}`],
+    });
     console.log(`Run started: ${runUrl}`);
   });
 
