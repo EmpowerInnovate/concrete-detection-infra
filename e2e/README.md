@@ -231,7 +231,7 @@ kubectl get nodes
 | # | Test | What happens |
 | --- | --- | --- |
 | 1 | `az-credentials.spec.ts` › 1 | **Service principal + secret** (`azure_client_id`, `azure_client_secret`): the saved secret is reused if Azure still accepts it. Otherwise, in **Microsoft Entra ID → App registrations**, it reuses the app `AZ_SP_NAME` (or registers it once), reads the **Application (client) ID**, and adds a **New client secret** in **Certificates & secrets**. |
-| 2 | `az-credentials.spec.ts` › 2 | **Roles:** checks the role assignments with the Azure API. A missing role is added in **Subscription → Access control (IAM) → Add role assignment**: **Contributor**, and **User Access Administrator** with the condition *"all roles except privileged administrator roles"*. |
+| 2 | `az-credentials.spec.ts` › 2 | **Roles:** checks the role assignments with the Azure API. A missing role is assigned with the Azure API **as you**, using your Portal sign-in (the same call as **Add role assignment → Review + assign**). Same roles as `azure-service-principal/main.tf`: **Contributor** and **User Access Administrator** at subscription scope. |
 | 3 | `az-credentials.spec.ts` › 3 | Checks that the subscription is enabled and that the Terraform state storage account name is yours or still free. |
 | 4 | `az-cluster-pipeline.spec.ts` | Opens **Deploy Kubernetes Cluster**, pre-fills `provider = azure`, subscription, tenant, client ID and secret, storage account and location, then **waits for you** to click **Run workflow**. The resource group is left empty, so the pipeline uses `<cluster>-rg`. Follows the run, then prints the `az aks` connect command. |
 

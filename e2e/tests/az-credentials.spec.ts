@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import fs from 'node:fs';
 import { azCfg } from '../lib/config';
 import {
-  AzurePortal, ROLES, armToken, defaultStorageAccount, expectValidCredentials, loadCredentials,
+  AzurePortal, ROLES, armToken, assignRole, defaultStorageAccount, expectValidCredentials, loadCredentials,
   rolesOf, saveCredentials, storageAccountStatus, subscriptionState, tenantOfSubscription,
   type AzureCredentials, type RoleName,
 } from '../lib/azure';
@@ -73,11 +73,21 @@ test('2. Contributor + User Access Administrator on the subscription (missing on
     console.log(`"${creds.appName}" is missing: ${missing.join(', ')} - assigning in the Azure Portal.`);
     const { context, az } = await portal(browser);
     try {
+      // Assign with the Azure API as you (the Portal's sign-in), which is what "Review + assign" does;
+      // the Portal clicks are only the fallback.
+      const principalId = (await armToken(creds))?.objectId;
+      const userToken = await az.userArmToken(creds.subscriptionId!, creds.tenantId!);
+      if (!userToken) console.warn('  Could not get your Portal sign-in for the Azure API - trying the Portal clicks instead.');
       for (const role of missing) {
         await test.step(`Access control (IAM) -> Add role assignment: ${role}`, async () => {
-          await az.tryAssignRole(creds.subscriptionId!, role, creds.appName!);
+          if (userToken && principalId) {
+            const error = await assignRole(userToken, creds.subscriptionId!, role, principalId);
+            if (error) console.warn(`  ${role}: could not assign it as you (${error}). Do it by hand, see below.`);
+          } else {
+            await az.tryAssignRole(creds.subscriptionId!, role, creds.appName!);
+          }
           await az.waitFor(
-            async () => ((await rolesOf(creds)).has(role) ? true : undefined),
+            async () => ((await rolesOf(creds).catch(() => new Set<RoleName>())).has(role) ? true : undefined),
             [
               `ACTION NEEDED: give "${creds.appName}" the role ${role} on the subscription`,
               `Subscriptions -> ${creds.subscriptionId} -> Access control (IAM) -> Add -> Add role assignment ->`,

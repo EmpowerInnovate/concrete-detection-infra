@@ -1,4 +1,5 @@
-import { expect, type Frame, type Locator, type Page } from '@playwright/test';
+import { expect, type Frame, type Locator, type Page, type Request } from '@playwright/test';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { azCfg } from './config';
@@ -59,7 +60,7 @@ export async function tenantOfSubscription(subscriptionId: string): Promise<stri
 /** Service principal token for ARM (client credentials). Returns undefined if the secret is rejected. */
 export async function armToken(c: AzureCredentials): Promise<{ token: string; objectId: string } | undefined> {
   if (!c.tenantId || !c.clientId || !c.clientSecret) return undefined;
-  const r = await fetch(`https://login.microsoftonline.com/${c.tenantId}/oauth2/v2.0/token`, {
+  const r = await fetchRetry(`https://login.microsoftonline.com/${c.tenantId}/oauth2/v2.0/token`, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
@@ -75,8 +76,21 @@ export async function armToken(c: AzureCredentials): Promise<{ token: string; ob
   return { token, objectId: claims.oid };
 }
 
+/** fetch with a few retries on network errors (connect timeouts to management.azure.com happen). */
+async function fetchRetry(url: string, init: RequestInit = {}, tries = 4): Promise<Response> {
+  for (let i = 1; ; i++) {
+    try {
+      return await fetch(url, init);
+    } catch (e) {
+      if (i >= tries) throw e;
+      console.warn(`  (network) ${new URL(url).hostname}: ${(e as Error).message} - retrying (${i}/${tries - 1})`);
+      await new Promise((r) => setTimeout(r, 5_000 * i));
+    }
+  }
+}
+
 async function arm<T>(token: string, urlPath: string, init: RequestInit = {}): Promise<{ status: number; body: T }> {
-  const r = await fetch(`${ARM}${urlPath}`, {
+  const r = await fetchRetry(`${ARM}${urlPath}`, {
     ...init,
     headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', ...(init.headers ?? {}) },
   });
@@ -108,6 +122,31 @@ export async function rolesOf(c: AzureCredentials): Promise<Set<RoleName>> {
     }
   }
   return have;
+}
+
+/**
+ * Assigns a built-in role on the subscription to the service principal with the Azure API, using the
+ * signed-in Portal user's token (the same call the Portal's "Add role assignment" makes).
+ * Returns undefined on success (or if it already exists), else the error message.
+ */
+export async function assignRole(userToken: string, subscriptionId: string, role: RoleName, principalId: string): Promise<string | undefined> {
+  const scope = `/subscriptions/${subscriptionId}`;
+  const r = await arm<{ error?: { code?: string; message?: string } }>(
+    userToken,
+    `${scope}/providers/Microsoft.Authorization/roleAssignments/${crypto.randomUUID()}?api-version=2022-04-01`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({
+        properties: {
+          roleDefinitionId: `${scope}/providers/Microsoft.Authorization/roleDefinitions/${ROLES[role]}`,
+          principalId,
+          principalType: 'ServicePrincipal',
+        },
+      }),
+    },
+  );
+  if (r.status === 200 || r.status === 201 || r.body.error?.code === 'RoleAssignmentExists') return undefined;
+  return `${r.status} ${r.body.error?.code ?? ''}: ${r.body.error?.message ?? ''}`.trim();
 }
 
 /** Default storage account name: "cracktf" + the first 12 hex characters of the subscription ID. */
@@ -284,6 +323,34 @@ export class AzurePortal {
   }
 
   // ---------------------------------------------------------------- role assignment
+
+  /**
+   * The signed-in user's Azure Resource Manager token, taken from the Portal's own calls to
+   * management.azure.com while it opens the subscription. Only kept in memory.
+   */
+  async userArmToken(subscriptionId: string, tenantId: string): Promise<string | undefined> {
+    let token: string | undefined;
+    const onRequest = async (req: Request) => {
+      if (token || new URL(req.url()).hostname !== 'management.azure.com') return;
+      const auth = (await req.allHeaders().catch(() => ({}) as Record<string, string>))['authorization'];
+      if (!auth?.startsWith('Bearer ')) return;
+      try {
+        const claims = JSON.parse(Buffer.from(auth.slice(7).split('.')[1], 'base64url').toString('utf8'));
+        if (String(claims.tid).toLowerCase() === tenantId.toLowerCase()) token = auth.slice(7);
+      } catch {
+        /* not a JWT */
+      }
+    };
+    const context = this.page.context();
+    context.on('request', onRequest);
+    try {
+      await this.goto(`#@/resource/subscriptions/${subscriptionId}/users`);
+      for (let i = 0; !token && i < 60; i++) await this.page.waitForTimeout(1_000);
+    } finally {
+      context.off('request', onRequest);
+    }
+    return token;
+  }
 
   /**
    * Subscription -> Access control (IAM) -> Add role assignment: `role` for the service principal
